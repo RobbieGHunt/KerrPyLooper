@@ -29,7 +29,6 @@ import argparse
 import datetime
 
 import numpy as np
-import pandas as pd
 from PIL import Image
 import matplotlib
 matplotlib.use("Agg")          # headless – no display needed
@@ -77,6 +76,7 @@ def load_txt_data(data_dir: str):
         return None
 
     try:
+        import pandas as pd
         df = pd.read_csv(txt_file, sep=None, engine="python",
                          comment="#", skip_blank_lines=True)
         df.columns = [c.strip() for c in df.columns]
@@ -111,7 +111,7 @@ def find_background_image(data_dir: str, image_files: list) -> str | None:
     return image_files[0] if image_files else None
 
 
-def run_subtraction_loop(data_dir: str, txt_df: pd.DataFrame,
+def run_subtraction_loop(data_dir: str, txt_df: "pd.DataFrame",
                          background_array: np.ndarray) -> np.ndarray:
     """
     Subtract *background_array* from each image listed in *txt_df* and return
@@ -167,75 +167,35 @@ def auto_correct_coeffs(field: np.ndarray, intensity: np.ndarray,
     intensity1 = intensity + drift1 * idx_off
 
     # ------------------------------------------------------------------
-    # Branch separation (ascending vs descending field sweep)
-    # ------------------------------------------------------------------
-    i_min = int(np.argmin(field))
-    i_max = int(np.argmax(field))
-    if i_min < i_max:
-        asc_idx  = np.arange(i_min, i_max + 1)
-        desc_idx = np.concatenate([np.arange(i_max, len(field)),
-                                   np.arange(0, i_min + 1)])
-    else:
-        desc_idx = np.arange(i_max, i_min + 1)
-        asc_idx  = np.concatenate([np.arange(i_min, len(field)),
-                                   np.arange(0, i_max + 1)])
-
-    # ------------------------------------------------------------------
-    # Linear Faraday: fit positive and negative saturation shelves
-    # independently on each branch, then average. This prevents the
-    # hysteresis step from biasing the Faraday slope.
+    # Joint 4-Parameter Fit: y = c1*h + c2*h^2 + c3*sign(h) + c4
+    # simultaneously fits Faraday slope (c1) and Cotton-Mouton (c2)
+    # to the saturation regions of both branches combined.
     # ------------------------------------------------------------------
     sat_threshold = 0.80 * field_abs_max
-    slopes = []
-    for branch_idx in (asc_idx, desc_idx):
-        f_b = field_off[branch_idx]
-        y_b = intensity1[branch_idx]
-        sat_pos = f_b > sat_threshold
-        sat_neg = f_b < -sat_threshold
-        branch_slopes = []
-        if np.sum(sat_pos) >= 2:
-            p_pos = np.polyfit(f_b[sat_pos], y_b[sat_pos], 1)
-            branch_slopes.append(p_pos[0])
-        if np.sum(sat_neg) >= 2:
-            p_neg = np.polyfit(f_b[sat_neg], y_b[sat_neg], 1)
-            branch_slopes.append(p_neg[0])
-        if branch_slopes:
-            slopes.append(np.mean(branch_slopes))
+    fit_mask = np.abs(field_off) > sat_threshold
+    
+    # If too few points, dynamically lower the threshold to 50%
+    if np.sum(fit_mask) < 4:
+        sat_threshold = 0.50 * field_abs_max
+        fit_mask = np.abs(field_off) > sat_threshold
 
-    linear_val = -float(np.mean(slopes)) if slopes else 0.0
-    intensity2 = intensity1 + linear_val * field_off
-
-    # ------------------------------------------------------------------
-    # Residual quadratic (Cotton–Mouton): fit on the step-subtracted
-    # background to prevent the MOKE step height from biasing the parameters.
-    # ------------------------------------------------------------------
-    sat_pos = field_off > sat_threshold
-    sat_neg = field_off < -sat_threshold
-    sat_all = sat_pos | sat_neg
-
-    quad1           = 0.0
+    linear_val = 0.0
+    quad1 = 0.0
     quad_offset_val = 0.0
 
-    if np.sum(sat_pos) >= 2 and np.sum(sat_neg) >= 2:
-        # Subtract shelf means to get background-only signal at saturation
-        M_pos = np.mean(intensity2[sat_pos])
-        M_neg = np.mean(intensity2[sat_neg])
-        y_bg = intensity2.copy()
-        y_bg[sat_pos] -= M_pos
-        y_bg[sat_neg] -= M_neg
-
-        p2 = np.polyfit(field_off[sat_all], y_bg[sat_all], 2)
-        a2, b2 = float(p2[0]), float(p2[1])
-        if abs(a2) > 0:
-            candidate_offset = -b2 / (2.0 * a2)
-            if abs(candidate_offset) <= field_abs_max:
-                # Physically plausible vertex position – use full quadratic
-                quad1           = -a2
-                quad_offset_val = candidate_offset
-                linear_val      -= b2
-            else:
-                # Vertex far outside field range – absorb only linear part
-                linear_val -= b2
+    if np.sum(fit_mask) >= 4:
+        h_fit = field_off[fit_mask]
+        y_fit = intensity1[fit_mask]
+        
+        A = np.column_stack([h_fit, h_fit**2, np.sign(h_fit), np.ones_like(h_fit)])
+        try:
+            coeffs_fit, _, _, _ = np.linalg.lstsq(A, y_fit, rcond=None)
+            c1, c2, c3, c4 = coeffs_fit[0], coeffs_fit[1], coeffs_fit[2], coeffs_fit[3]
+            linear_val = -float(c1)
+            quad1 = -float(c2)
+            quad_offset_val = 0.0
+        except Exception as exc:
+            print(f"Error in joint 4-parameter least-squares fit: {exc}")
 
     # ------------------------------------------------------------------
     # Pass 2 – second drift correction after all shape corrections
@@ -489,6 +449,7 @@ def save_summary_plots(results: list, analysis_dir: str):
     Given a list of result dicts (each must contain 'step', 'hc_avg', 'hr_abs',
     'dir_name'), create Hc-vs-step and Hr-vs-step plots and a summary CSV.
     """
+    import pandas as pd
     # Filter to only those with a detected step number
     stepped = [r for r in results if r.get("step") is not None]
     if not stepped:
@@ -582,6 +543,7 @@ def save_full_summary(results: list, analysis_dir: str):
     Save a single tab-separated text file for ALL processed directories
     (including those without step numbers).
     """
+    import pandas as pd
     rows = []
     for r in results:
         rows.append({
