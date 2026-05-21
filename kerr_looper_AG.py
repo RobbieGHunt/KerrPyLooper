@@ -13,14 +13,60 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QFileDialog, QVBoxLayout, QPushButton,
     QListWidget, QLabel, QMessageBox, QHBoxLayout, QSlider,
     QGroupBox, QFormLayout, QDoubleSpinBox, QSplitter, QTextEdit,
-    QCheckBox, QComboBox
+    QCheckBox, QComboBox, QSpinBox, QLineEdit, QSizePolicy, QScrollArea,
+    QSplitterHandle
 )
-from PyQt5.QtGui import QPixmap, QImage
-from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QBrush
+from PyQt5.QtCore import Qt, QRect, QPoint, pyqtSignal, QSize, QRectF, QPointF
 from PIL import Image
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 import scipy.ndimage as ndimage
+
+
+class StyledSplitterHandle(QSplitterHandle):
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        
+        # Fill background with a desaturated light-grey theme color
+        painter.fillRect(self.rect(), QColor(240, 240, 240))
+        
+        w, h = self.width(), self.height()
+        
+        # Draw desaturated border lines
+        pen_border = QPen(QColor(215, 215, 215), 1, Qt.SolidLine)
+        painter.setPen(pen_border)
+        if self.orientation() == Qt.Horizontal:
+            painter.drawLine(0, 0, 0, h)
+            painter.drawLine(w - 1, 0, w - 1, h)
+        else:
+            painter.drawLine(0, 0, w, 0)
+            painter.drawLine(0, h - 1, w, h - 1)
+            
+        # Draw 3 neat desaturated grip indicators in the center
+        pen_grip = QPen(QColor(130, 130, 130), 2, Qt.SolidLine)
+        painter.setPen(pen_grip)
+        
+        if self.orientation() == Qt.Horizontal:
+            cx = w // 2
+            cy = h // 2
+            painter.drawLine(cx - 2, cy - 8, cx + 2, cy - 8)
+            painter.drawLine(cx - 2, cy, cx + 2, cy)
+            painter.drawLine(cx - 2, cy + 8, cx + 2, cy + 8)
+        else:
+            cx = w // 2
+            cy = h // 2
+            painter.drawLine(cx - 8, cy - 2, cx - 8, cy + 2)
+            painter.drawLine(cx, cy - 2, cx, cy + 2)
+            painter.drawLine(cx + 8, cy - 2, cx + 8, cy + 2)
+
+
+class StyledSplitter(QSplitter):
+    def createHandle(self):
+        return StyledSplitterHandle(self.orientation(), self)
 
 
 def crop600(arr):
@@ -112,26 +158,436 @@ def wiener_deconvolve(image, sigma, balance=0.02):
     deblurred = np.real(np.fft.ifft2(deblurred_fft))
     return deblurred
 
+
+def get_roi_mean(arr, shape_type, roi_data):
+    if shape_type == "None" or roi_data is None:
+        return np.mean(arr)
+        
+    h, w = arr.shape[:2]
+    
+    if shape_type in ["Rectangle", "Square"]:
+        cx, cy, rw, rh, angle_deg = roi_data
+        if rw <= 0 or rh <= 0:
+            return np.mean(arr)
+            
+        theta = np.radians(angle_deg)
+        cos_val = np.cos(theta)
+        sin_val = np.sin(theta)
+        
+        Y, X = np.ogrid[:h, :w]
+        dx = X - cx
+        dy = Y - cy
+        
+        X_local = dx * cos_val + dy * sin_val
+        Y_local = -dx * sin_val + dy * cos_val
+        
+        mask = (np.abs(X_local) <= rw / 2.0) & (np.abs(Y_local) <= rh / 2.0)
+        
+        if not np.any(mask):
+            return np.mean(arr)
+            
+        return np.mean(arr[mask])
+        
+    elif shape_type == "Circle":
+        cx, cy, r = roi_data
+        if r <= 0:
+            return np.mean(arr)
+        Y, X = np.ogrid[:h, :w]
+        dist_sq = (X - cx)**2 + (Y - cy)**2
+        mask = dist_sq <= r**2
+        
+        if not np.any(mask):
+            return np.mean(arr)
+            
+        return np.mean(arr[mask])
+            
+    return np.mean(arr)
+
+
+class ROISelectLabel(QLabel):
+    roi_changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.roi_shape = "None"
+        self.roi_data = None  # (cx, cy, w, h, angle) or (cx, cy, r)
+        self.is_dragging = False
+        self.start_pos = None
+        self.current_pos = None
+        self.drag_mode = None  # None, "draw", "move", "rotate"
+        self.initial_roi_data = None
+        self.setMouseTracking(True)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def minimumSizeHint(self):
+        return QSize(100, 100)
+        
+    def set_roi_shape(self, shape):
+        self.roi_shape = shape
+        self.roi_data = None
+        self.update()
+        
+    def clear_roi(self):
+        self.roi_data = None
+        self.update()
+        self.roi_changed.emit()
+
+    def label_to_image_coords(self, pos):
+        if not self.pixmap() or self.pixmap().isNull():
+            return None
+        
+        lw, lh = self.width(), self.height()
+        pw, ph = self.pixmap().width(), self.pixmap().height()
+        
+        s = min(lw / pw, lh / ph)
+        dw = int(pw * s)
+        dh = int(ph * s)
+        x_offset = (lw - dw) // 2
+        y_offset = (lh - dh) // 2
+        
+        if s <= 0:
+            return None
+            
+        ix = (pos.x() - x_offset) / s
+        iy = (pos.y() - y_offset) / s
+        
+        ix = max(0.0, min(float(pw - 1), ix))
+        iy = max(0.0, min(float(ph - 1), iy))
+        
+        return ix, iy
+
+    def get_rotation_handle_pos(self):
+        if not self.pixmap() or self.pixmap().isNull() or self.roi_shape not in ["Rectangle", "Square"] or self.roi_data is None:
+            return None
+            
+        cx, cy, w, h, angle = self.roi_data
+        
+        lw, lh = self.width(), self.height()
+        pw, ph = self.pixmap().width(), self.pixmap().height()
+        
+        s = min(lw / pw, lh / ph)
+        dw = int(pw * s)
+        dh = int(ph * s)
+        x_offset = (lw - dw) // 2
+        y_offset = (lh - dh) // 2
+        
+        theta = np.radians(angle)
+        dist_screen = (h * s) / 2.0 + 20.0
+        
+        scx = cx * s + x_offset
+        scy = cy * s + y_offset
+        
+        hx = scx + dist_screen * np.sin(theta)
+        hy = scy - dist_screen * np.cos(theta)
+        return hx, hy
+
+    def is_point_inside_roi(self, ix, iy):
+        if self.roi_shape == "None" or self.roi_data is None:
+            return False
+            
+        if self.roi_shape in ["Rectangle", "Square"]:
+            cx, cy, w, h, angle = self.roi_data
+            theta = np.radians(angle)
+            cos_val = np.cos(theta)
+            sin_val = np.sin(theta)
+            
+            dx = ix - cx
+            dy = iy - cy
+            
+            x_local = dx * cos_val + dy * sin_val
+            y_local = -dx * sin_val + dy * cos_val
+            
+            return (abs(x_local) <= w / 2.0) and (abs(y_local) <= h / 2.0)
+            
+        elif self.roi_shape == "Circle":
+            cx, cy, r = self.roi_data
+            dist_sq = (ix - cx)**2 + (iy - cy)**2
+            return dist_sq <= r**2
+            
+        return False
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self.roi_shape != "None":
+            coords = self.label_to_image_coords(event.pos())
+            if not coords:
+                super().mousePressEvent(event)
+                return
+                
+            ix, iy = coords
+            
+            # Check rotation handle first
+            handle_pos = self.get_rotation_handle_pos()
+            if handle_pos:
+                hx, hy = handle_pos
+                click_x, click_y = event.pos().x(), event.pos().y()
+                dist = np.sqrt((click_x - hx)**2 + (click_y - hy)**2)
+                if dist < 12.0:
+                    self.drag_mode = "rotate"
+                    self.is_dragging = True
+                    self.start_pos = coords
+                    self.current_pos = coords
+                    self.update()
+                    return
+            
+            # Check inside ROI
+            if self.is_point_inside_roi(ix, iy):
+                self.drag_mode = "move"
+                self.is_dragging = True
+                self.start_pos = coords
+                self.current_pos = coords
+                self.initial_roi_data = self.roi_data
+                self.update()
+                return
+                
+            # Default to draw mode
+            self.drag_mode = "draw"
+            self.start_pos = coords
+            self.current_pos = coords
+            self.is_dragging = True
+            self.update_roi_from_drag()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self.is_dragging:
+            coords = self.label_to_image_coords(event.pos())
+            if coords:
+                self.current_pos = coords
+                if self.drag_mode == "draw":
+                    self.update_roi_from_drag()
+                elif self.drag_mode == "move":
+                    self.update_roi_position()
+                elif self.drag_mode == "rotate":
+                    self.update_roi_rotation()
+                self.roi_changed.emit()
+        else:
+            coords = self.label_to_image_coords(event.pos())
+            if coords and self.roi_shape != "None" and self.roi_data is not None:
+                ix, iy = coords
+                handle_pos = self.get_rotation_handle_pos()
+                is_near_handle = False
+                if handle_pos:
+                    hx, hy = handle_pos
+                    dist = np.sqrt((event.pos().x() - hx)**2 + (event.pos().y() - hy)**2)
+                    if dist < 12.0:
+                        is_near_handle = True
+                        
+                if is_near_handle:
+                    self.setCursor(Qt.PointingHandCursor)
+                elif self.is_point_inside_roi(ix, iy):
+                    self.setCursor(Qt.SizeAllCursor)
+                else:
+                    self.setCursor(Qt.CrossCursor)
+            else:
+                self.setCursor(Qt.ArrowCursor)
+                
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self.is_dragging:
+            coords = self.label_to_image_coords(event.pos())
+            if coords:
+                self.current_pos = coords
+            self.is_dragging = False
+            
+            if self.drag_mode == "draw":
+                self.update_roi_from_drag()
+            elif self.drag_mode == "move":
+                self.update_roi_position()
+            elif self.drag_mode == "rotate":
+                self.update_roi_rotation()
+                
+            self.drag_mode = None
+            self.initial_roi_data = None
+            self.roi_changed.emit()
+        else:
+            super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event):
+        self.setCursor(Qt.ArrowCursor)
+        super().leaveEvent(event)
+
+    def update_roi_from_drag(self):
+        if not self.pixmap() or self.pixmap().isNull() or not self.start_pos or not self.current_pos:
+            return
+            
+        pw, ph = self.pixmap().width(), self.pixmap().height()
+        
+        if self.roi_shape == "Rectangle":
+            w = abs(self.start_pos[0] - self.current_pos[0])
+            h = abs(self.start_pos[1] - self.current_pos[1])
+            cx = (self.start_pos[0] + self.current_pos[0]) / 2.0
+            cy = (self.start_pos[1] + self.current_pos[1]) / 2.0
+            self.roi_data = (cx, cy, w, h, 0.0)
+            
+        elif self.roi_shape == "Square":
+            dx = self.current_pos[0] - self.start_pos[0]
+            dy = self.current_pos[1] - self.start_pos[1]
+            side = max(abs(dx), abs(dy))
+            sx = 1 if dx >= 0 else -1
+            sy = 1 if dy >= 0 else -1
+            
+            if sx > 0:
+                side = min(side, pw - 1 - self.start_pos[0])
+            else:
+                side = min(side, self.start_pos[0])
+            if sy > 0:
+                side = min(side, ph - 1 - self.start_pos[1])
+            else:
+                side = min(side, self.start_pos[1])
+                
+            x = self.start_pos[0] if sx > 0 else self.start_pos[0] - side
+            y = self.start_pos[1] if sy > 0 else self.start_pos[1] - side
+            cx = x + side / 2.0
+            cy = y + side / 2.0
+            self.roi_data = (cx, cy, side, side, 0.0)
+            
+        elif self.roi_shape == "Circle":
+            cx, cy = self.start_pos
+            r = int(np.sqrt((self.current_pos[0] - self.start_pos[0])**2 + (self.current_pos[1] - self.start_pos[1])**2))
+            r = min(r, cx, pw - 1 - cx, cy, ph - 1 - cy)
+            self.roi_data = (cx, cy, r)
+            
+        self.update()
+
+    def update_roi_position(self):
+        if not self.initial_roi_data or not self.start_pos or not self.current_pos:
+            return
+            
+        dx = self.current_pos[0] - self.start_pos[0]
+        dy = self.current_pos[1] - self.start_pos[1]
+        
+        pw, ph = self.pixmap().width(), self.pixmap().height()
+        
+        if self.roi_shape in ["Rectangle", "Square"]:
+            init_cx, init_cy, w, h, angle = self.initial_roi_data
+            new_cx = init_cx + dx
+            new_cy = init_cy + dy
+            
+            new_cx = max(0, min(pw - 1, new_cx))
+            new_cy = max(0, min(ph - 1, new_cy))
+            self.roi_data = (new_cx, new_cy, w, h, angle)
+            
+        elif self.roi_shape == "Circle":
+            init_cx, init_cy, r = self.initial_roi_data
+            new_cx = init_cx + dx
+            new_cy = init_cy + dy
+            
+            new_cx = max(r, min(pw - 1 - r, new_cx))
+            new_cy = max(r, min(ph - 1 - r, new_cy))
+            self.roi_data = (new_cx, new_cy, r)
+            
+        self.update()
+
+    def update_roi_rotation(self):
+        if not self.roi_data or not self.current_pos:
+            return
+            
+        cx, cy, w, h, _ = self.roi_data
+        mx, my = self.current_pos
+        angle_rad = np.arctan2(my - cy, mx - cx)
+        angle_deg = np.degrees(angle_rad) + 90.0
+        angle_deg = (angle_deg + 180.0) % 360.0 - 180.0
+        
+        self.roi_data = (cx, cy, w, h, angle_deg)
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Clear background (QLabel's default background)
+        painter.fillRect(self.rect(), self.palette().window().color())
+        
+        if not self.pixmap() or self.pixmap().isNull():
+            return
+            
+        lw, lh = self.width(), self.height()
+        pw, ph = self.pixmap().width(), self.pixmap().height()
+        
+        s = min(lw / pw, lh / ph)
+        dw = int(pw * s)
+        dh = int(ph * s)
+        x_offset = (lw - dw) // 2
+        y_offset = (lh - dh) // 2
+        
+        if s > 0:
+            painter.drawPixmap(x_offset, y_offset, dw, dh, self.pixmap())
+        
+        if self.roi_shape == "None" or self.roi_data is None:
+            return
+            
+        pen = QPen(QColor(50, 205, 50), 2, Qt.SolidLine)
+        brush = QBrush(QColor(50, 205, 50, 45))
+        painter.setPen(pen)
+        painter.setBrush(brush)
+        
+        if self.roi_shape in ["Rectangle", "Square"]:
+            cx, cy, w, h, angle = self.roi_data
+            painter.save()
+            painter.translate(cx * s + x_offset, cy * s + y_offset)
+            painter.rotate(angle)
+            
+            sw = w * s
+            sh = h * s
+            
+            rect = QRectF(-sw / 2.0, -sh / 2.0, sw, sh)
+            painter.drawRect(rect)
+            
+            pen_line = QPen(QColor(50, 205, 50), 1, Qt.DashLine)
+            painter.setPen(pen_line)
+            handle_dist = 20.0
+            painter.drawLine(QPointF(0.0, -sh / 2.0), QPointF(0.0, -sh / 2.0 - handle_dist))
+            
+            pen_handle = QPen(QColor(50, 205, 50), 2, Qt.SolidLine)
+            brush_handle = QBrush(QColor(0, 255, 0))
+            painter.setPen(pen_handle)
+            painter.setBrush(brush_handle)
+            painter.drawEllipse(QPointF(0.0, -sh / 2.0 - handle_dist), 5, 5)
+            
+            painter.restore()
+        elif self.roi_shape == "Circle":
+            cx, cy, r = self.roi_data
+            painter.drawEllipse(QPointF(cx * s + x_offset, cy * s + y_offset), r * s, r * s)
+
+
 class LoopCorrectionPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.init_ui()
+        self.is_saving = False
         self.coeffs = dict(drift=0.0, linear=0.0, quad=0.0, quad_offset=0.0)
         self.z_coeff = 0.0
         self.normalize = False
         self.contrast = 1.0
         self.parent_widget = parent
         self.hc_hr_marks = None  # Stores latest Hc/Hr marks for highlighting
+        self.init_ui()
 
     def init_ui(self):
         main_layout = QVBoxLayout()
-        splitter = QSplitter(Qt.Vertical)
+        splitter = StyledSplitter(Qt.Vertical)
+        splitter.setHandleWidth(8)
 
-        # Top widget: Plot canvas
-        self.figure, self.ax = plt.subplots(figsize=(5, 4))
+        # Top widget: Plot canvas and Navigation Toolbar
+        plot_container = QWidget()
+        plot_layout = QVBoxLayout()
+        plot_layout.setContentsMargins(0, 0, 0, 0)
+        
+        self.figure = Figure(figsize=(4, 6))
+        self.ax = self.figure.add_subplot(111)
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setMinimumHeight(100)
-        splitter.addWidget(self.canvas)
+        
+        # Override the resize event to scale plot elements proportionally
+        self.canvas.original_resizeEvent = self.canvas.resizeEvent
+        self.canvas.resizeEvent = self.on_canvas_resize
+        
+        self.toolbar = NavigationToolbar(self.canvas, self)
+        
+        plot_layout.addWidget(self.canvas)
+        plot_layout.addWidget(self.toolbar)
+        plot_container.setLayout(plot_layout)
+        splitter.addWidget(plot_container)
 
         # Bottom widget: Controls container
         controls_widget = QWidget()
@@ -214,22 +670,6 @@ class LoopCorrectionPanel(QWidget):
         hbox_quad_offset.addWidget(self.spin_quad_offset)
         glayout.addRow("Quadratic Field Offset", hbox_quad_offset)
 
-        # Contrast control
-        hbox_contrast = QHBoxLayout()
-        self.sld_contrast = QSlider(Qt.Horizontal)
-        self.sld_contrast.setMinimum(10)
-        self.sld_contrast.setMaximum(400)
-        self.sld_contrast.setValue(100)
-        self.sld_contrast.valueChanged.connect(self.contrast_slider_changed)
-        self.spin_contrast = QDoubleSpinBox()
-        self.spin_contrast.setDecimals(2)
-        self.spin_contrast.setRange(0.1, 4.0)
-        self.spin_contrast.setSingleStep(0.01)
-        self.spin_contrast.setValue(1.0)
-        self.spin_contrast.valueChanged.connect(self.contrast_spinbox_changed)
-        hbox_contrast.addWidget(self.sld_contrast)
-        hbox_contrast.addWidget(self.spin_contrast)
-        glayout.addRow("Contrast Stretch", hbox_contrast)
 
         # Auto, Zero and Hc/Hr buttons
         hbox_auto = QHBoxLayout()
@@ -244,6 +684,11 @@ class LoopCorrectionPanel(QWidget):
         self.btn_hc = QPushButton("Calc Hc/Hr")
         self.btn_hc.clicked.connect(self.calc_hc_hr)
         hbox_auto.addWidget(self.btn_hc)
+        
+        self.btn_save_loop = QPushButton("Save Loop")
+        self.btn_save_loop.clicked.connect(self.save_loop)
+        hbox_auto.addWidget(self.btn_save_loop)
+        
         glayout.addRow(hbox_auto)
 
         group.setLayout(glayout)
@@ -287,12 +732,141 @@ class LoopCorrectionPanel(QWidget):
         group_z.setLayout(zlayout)
         controls_layout.addWidget(group_z)
 
+        # Plot Style Settings GroupBox
+        group_plot = QGroupBox("Plot Settings")
+        plot_settings_layout = QFormLayout()
+        
+        self.color_map = {
+            "Dark Navy": "#1F4E79",
+            "Slate Blue": "#2E4057",
+            "Crimson": "#C62828",
+            "Teal": "#00796B",
+            "Charcoal": "#263238",
+            "Purple": "#6A1B9A"
+        }
+        self.line_style_map = {
+            "Solid": "-",
+            "Dashed": "--",
+            "Dotted": ":",
+            "Dash-dot": "-.",
+            "None": "None"
+        }
+        self.marker_style_map = {
+            "Circle": "o",
+            "Square": "s",
+            "Diamond": "d",
+            "Triangle": "^",
+            "None": "None"
+        }
+
+        # Row 1: Grid
+        self.chk_grid = QCheckBox("Show Grid")
+        self.chk_grid.setChecked(True)
+        self.chk_grid.stateChanged.connect(self.replot_current_data)
+        
+        self.cmb_grid_style = QComboBox()
+        self.cmb_grid_style.addItems(["Dashed", "Solid", "Dotted", "Dash-dot"])
+        self.cmb_grid_style.currentIndexChanged.connect(self.replot_current_data)
+        
+        hbox_grid = QHBoxLayout()
+        hbox_grid.addWidget(self.chk_grid)
+        hbox_grid.addWidget(QLabel("Style:"))
+        hbox_grid.addWidget(self.cmb_grid_style)
+        plot_settings_layout.addRow("Grid", hbox_grid)
+
+        # Row 2: Line/Marker Format
+        self.cmb_line_color = QComboBox()
+        self.cmb_line_color.addItems(list(self.color_map.keys()))
+        self.cmb_line_color.currentIndexChanged.connect(self.replot_current_data)
+
+        self.cmb_line_style = QComboBox()
+        self.cmb_line_style.addItems(list(self.line_style_map.keys()))
+        self.cmb_line_style.currentIndexChanged.connect(self.replot_current_data)
+
+        self.cmb_marker_style = QComboBox()
+        self.cmb_marker_style.addItems(list(self.marker_style_map.keys()))
+        self.cmb_marker_style.currentIndexChanged.connect(self.replot_current_data)
+
+        hbox_format = QHBoxLayout()
+        hbox_format.addWidget(QLabel("Color:"))
+        hbox_format.addWidget(self.cmb_line_color)
+        hbox_format.addWidget(QLabel("Line:"))
+        hbox_format.addWidget(self.cmb_line_style)
+        hbox_format.addWidget(QLabel("Marker:"))
+        hbox_format.addWidget(self.cmb_marker_style)
+        plot_settings_layout.addRow("Format", hbox_format)
+
+        # Row 3: Title
+        self.chk_auto_title = QCheckBox("Auto")
+        self.chk_auto_title.setChecked(True)
+        self.chk_auto_title.stateChanged.connect(self.toggle_auto_title)
+
+        self.txt_title = QLineEdit()
+        self.txt_title.setText("Hysteresis Loop")
+        self.txt_title.setEnabled(False)
+        self.txt_title.textChanged.connect(self.replot_current_data)
+
+        hbox_title = QHBoxLayout()
+        hbox_title.addWidget(self.chk_auto_title)
+        hbox_title.addWidget(self.txt_title)
+        plot_settings_layout.addRow("Title", hbox_title)
+
+        # Row 4: Labels
+        self.chk_auto_labels = QCheckBox("Auto")
+        self.chk_auto_labels.setChecked(True)
+        self.chk_auto_labels.stateChanged.connect(self.toggle_auto_labels)
+
+        self.txt_xlabel = QLineEdit()
+        self.txt_xlabel.setText("Field (mT)")
+        self.txt_xlabel.setEnabled(False)
+        self.txt_xlabel.textChanged.connect(self.replot_current_data)
+
+        self.txt_ylabel = QLineEdit()
+        self.txt_ylabel.setText("MOKE Intensity")
+        self.txt_ylabel.setEnabled(False)
+        self.txt_ylabel.textChanged.connect(self.replot_current_data)
+
+        hbox_labels = QHBoxLayout()
+        hbox_labels.addWidget(self.chk_auto_labels)
+        hbox_labels.addWidget(QLabel("X:"))
+        hbox_labels.addWidget(self.txt_xlabel)
+        hbox_labels.addWidget(QLabel("Y:"))
+        hbox_labels.addWidget(self.txt_ylabel)
+        plot_settings_layout.addRow("Labels", hbox_labels)
+
+        # Row 5: Visibility checkboxes
+        self.chk_highlights = QCheckBox("Show Highlights")
+        self.chk_highlights.setChecked(True)
+        self.chk_highlights.stateChanged.connect(self.replot_current_data)
+
+        self.chk_legend = QCheckBox("Show Legend")
+        self.chk_legend.setChecked(False)
+        self.chk_legend.stateChanged.connect(self.replot_current_data)
+
+        self.chk_pub_ticks = QCheckBox("Pub Ticks")
+        self.chk_pub_ticks.setChecked(False)
+        self.chk_pub_ticks.stateChanged.connect(self.replot_current_data)
+
+        hbox_checks = QHBoxLayout()
+        hbox_checks.addWidget(self.chk_highlights)
+        hbox_checks.addWidget(self.chk_legend)
+        hbox_checks.addWidget(self.chk_pub_ticks)
+        plot_settings_layout.addRow(hbox_checks)
+
+        group_plot.setLayout(plot_settings_layout)
+        controls_layout.addWidget(group_plot)
+
         self.hc_hr_output = QTextEdit()
         self.hc_hr_output.setReadOnly(True)
         self.hc_hr_output.setMinimumHeight(20)
         controls_layout.addWidget(self.hc_hr_output)
 
-        splitter.addWidget(controls_widget)
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QScrollArea.NoFrame)
+        scroll_area.setWidget(controls_widget)
+
+        splitter.addWidget(scroll_area)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         splitter.setSizes([300, 400])
@@ -565,61 +1139,187 @@ class LoopCorrectionPanel(QWidget):
             self.parent_widget.request_loop_update()
             self.parent_widget.show_current_subtracted_image_contrast_only()
 
-    def contrast_slider_changed(self, val):
-        self.contrast = val / 100.0
-        self.spin_contrast.blockSignals(True)
-        self.spin_contrast.setValue(self.contrast)
-        self.spin_contrast.blockSignals(False)
-        if self.parent_widget:
-            if hasattr(self.parent_widget, 'sld_img_contrast'):
-                self.parent_widget.sld_img_contrast.blockSignals(True)
-                self.parent_widget.sld_img_contrast.setValue(val)
-                self.parent_widget.sld_img_contrast.blockSignals(False)
-            self.parent_widget.show_current_subtracted_image_contrast_only()
 
-    def contrast_spinbox_changed(self, val):
-        self.contrast = val
-        self.sld_contrast.blockSignals(True)
-        self.sld_contrast.setValue(int(val * 100))
-        self.sld_contrast.blockSignals(False)
+    def replot_current_data(self, *args):
         if self.parent_widget:
-            if hasattr(self.parent_widget, 'sld_img_contrast'):
-                self.parent_widget.sld_img_contrast.blockSignals(True)
-                self.parent_widget.sld_img_contrast.setValue(int(val * 100))
-                self.parent_widget.sld_img_contrast.blockSignals(False)
-            self.parent_widget.show_current_subtracted_image_contrast_only()
+            self.parent_widget.request_loop_update()
+
+    def toggle_auto_title(self, state):
+        self.txt_title.setEnabled(not self.chk_auto_title.isChecked())
+        self.replot_current_data()
+
+    def toggle_auto_labels(self, state):
+        enabled = not self.chk_auto_labels.isChecked()
+        self.txt_xlabel.setEnabled(enabled)
+        self.txt_ylabel.setEnabled(enabled)
+        self.replot_current_data()
+
+    def on_canvas_resize(self, event):
+        self.canvas.original_resizeEvent(event)
+        if self.parent_widget and self.parent_widget.loop_field is not None:
+            # Save limits to be restored inside plot_loop
+            self._resize_limits = (self.ax.get_xlim(), self.ax.get_ylim())
+            self.replot_current_data()
+        else:
+            self.replot_current_data()
 
     def plot_loop(self, field, intensity, show_title="Hysteresis Loop"):
         self.ax.clear()
-        self.ax.plot(field, intensity, 'o-', lw=1.5, markersize=4)
-        self.ax.set_xlabel("Field (mT)")
-        self.ax.set_ylabel("Intensity")
-        self.ax.set_title(show_title)
-        self.ax.grid()
-        # Highlight Hc/Hr if they exist
-        if self.hc_hr_marks is not None:
+        
+        # Calculate dynamic scale factor based on canvas widget size relative to baseline (500x400)
+        # Baseline diagonal is sqrt(500^2 + 400^2) = ~640.31 pixels
+        if getattr(self, 'is_saving', False):
+            scale = 1.0
+        else:
+            w = max(50, self.canvas.width())
+            h = max(50, self.canvas.height())
+            diag = np.sqrt(w**2 + h**2)
+            scale = max(0.5, min(4.0, diag / 640.3))
+        
+        # Read style choices from controls
+        grid_style_map = {"Solid": "-", "Dashed": "--", "Dotted": ":", "Dash-dot": "-."}
+        grid_style = grid_style_map.get(self.cmb_grid_style.currentText(), "--")
+        show_grid = self.chk_grid.isChecked()
+        
+        color_name = self.cmb_line_color.currentText()
+        line_color = self.color_map.get(color_name, "#1F4E79")
+        
+        ls_name = self.cmb_line_style.currentText()
+        line_style = self.line_style_map.get(ls_name, "-")
+        
+        marker_name = self.cmb_marker_style.currentText()
+        marker_style = self.marker_style_map.get(marker_name, "o")
+        
+        show_highlights = self.chk_highlights.isChecked()
+        show_legend = self.chk_legend.isChecked()
+        pub_ticks = self.chk_pub_ticks.isChecked()
+        
+        # Font settings for publication look
+        plt.rcParams['font.family'] = 'sans-serif'
+        plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica', 'DejaVu Sans', 'Liberation Sans']
+        
+        # Auto-configure title if requested
+        if self.chk_auto_title.isChecked():
+            self.txt_title.blockSignals(True)
+            self.txt_title.setText(show_title)
+            self.txt_title.blockSignals(False)
+            display_title = show_title
+        else:
+            display_title = self.txt_title.text()
+            
+        # Auto-configure labels if requested
+        if self.chk_auto_labels.isChecked():
+            xlabel_text = "Field (mT)"
+            ylabel_text = "MOKE Intensity (Normalized)" if self.normalize else "MOKE Intensity (a.u.)"
+            
+            self.txt_xlabel.blockSignals(True)
+            self.txt_xlabel.setText(xlabel_text)
+            self.txt_xlabel.blockSignals(False)
+            
+            self.txt_ylabel.blockSignals(True)
+            self.txt_ylabel.setText(ylabel_text)
+            self.txt_ylabel.blockSignals(False)
+        else:
+            xlabel_text = self.txt_xlabel.text()
+            ylabel_text = self.txt_ylabel.text()
+            
+        # Draw the main data loop with clean styling
+        if line_style == "None" and marker_style == "None":
+            # Fallback to visible markers if both are None
+            marker_style = "o"
+            
+        self.ax.plot(field, intensity, color=line_color, linestyle=line_style, 
+                     marker=marker_style, lw=1.5 * scale, markersize=4 * scale, label='MOKE intensity')
+        
+        self.ax.set_xlabel(xlabel_text, fontsize=18 * scale, fontweight='normal')
+        self.ax.set_ylabel(ylabel_text, fontsize=18 * scale, fontweight='normal')
+        if display_title:
+            self.ax.set_title(display_title, fontsize=11 * scale, fontweight='normal', pad=10 * scale)
+        
+        # Configure Grid
+        if show_grid:
+            self.ax.grid(True, which='both', color='#e0e0e0', linestyle=grid_style, linewidth=1 * scale)
+        else:
+            self.ax.grid(False)
+            
+        # Configure Tick Style
+        if pub_ticks:
+            self.ax.tick_params(axis='both', which='major', direction='in', 
+                                top=True, right=True, bottom=True, left=True,
+                                labelsize=9.5 * scale, width=1.0 * scale, length=5.0 * scale)
+            self.ax.tick_params(axis='both', which='minor', direction='in',
+                                top=True, right=True, bottom=True, left=True,
+                                width=0.75 * scale, length=2.5 * scale)
+            self.ax.minorticks_on()
+        else:
+            self.ax.tick_params(axis='both', which='both', direction='out',
+                                top=False, right=False, bottom=True, left=True,
+                                labelsize=9.5 * scale, width=1.0 * scale, length=5.0 * scale)
+            self.ax.minorticks_off()
+            
+        # Style Spines (Borders)
+        for spine in self.ax.spines.values():
+            spine.set_linewidth(1.0 * scale)
+            spine.set_color('#1a1a1a')
+            
+        # Highlight Hc/Hr if they exist and checkbox is checked
+        if show_highlights and self.hc_hr_marks is not None:
             hc_pos, hc_neg, rem_fields, rem_values = self.hc_hr_marks
+            
+            hc_pos_color = '#2E7D32'  # Forest green
+            hc_neg_color = '#C62828'  # Crimson/dark red
+            rem_color = '#E65100'     # Dark orange
+            
+            if len(intensity) > 0:
+                yrange = max(intensity) - min(intensity)
+            else:
+                yrange = 1.0
+                
             if hc_pos is not None:
-                self.ax.plot(hc_pos[0], hc_pos[1], 'o', ms=12, mec='black', mfc='lime', label='Hc+')
-                self.ax.annotate(f"Hc+\n{hc_pos[0]:.2f}", xy=hc_pos, xytext=(hc_pos[0], hc_pos[1]+0.1*(max(intensity)-min(intensity))), 
-                                 ha="center", fontsize=9, color='green',
-                                 arrowprops=dict(arrowstyle='->', color='green'))
+                self.ax.plot(hc_pos[0], hc_pos[1], 'o', ms=6 * scale, mec=hc_pos_color, mfc='white', mew=1.5 * scale, label='Hc+')
+                self.ax.axvline(x=hc_pos[0], color=hc_pos_color, linestyle=':', alpha=0.7, lw=1.2 * scale)
+                self.ax.annotate(f"Hc+\n{hc_pos[0]:.2f} mT", xy=hc_pos, 
+                                 xytext=(hc_pos[0], hc_pos[1] + 0.15 * yrange),
+                                 ha="center", va="bottom", fontsize=8.5 * scale, color=hc_pos_color,
+                                 bbox=dict(boxstyle='round,pad=0.2', fc='#f1f8e9', ec=hc_pos_color, lw=0.5 * scale, alpha=0.9),
+                                 arrowprops=dict(arrowstyle='->', color=hc_pos_color, lw=0.8 * scale))
+                                 
             if hc_neg is not None:
-                self.ax.plot(hc_neg[0], hc_neg[1], 'o', ms=12, mec='black', mfc='magenta', label='Hc-')
-                self.ax.annotate(f"Hc-\n{hc_neg[0]:.2f}", xy=hc_neg, xytext=(hc_neg[0], hc_neg[1]+0.1*(max(intensity)-min(intensity))),
-                                 ha="center", fontsize=9, color='magenta',
-                                 arrowprops=dict(arrowstyle='->', color='magenta'))
-            if rem_fields is not None and rem_values is not None:
-                for rf, rv in zip(rem_fields, rem_values):
-                    self.ax.plot(rf, rv, 's', ms=10, mec='black', mfc='orange', label='Hr')
-                self.ax.annotate(f"Hr\n{np.mean(rem_values):.3f}", 
-                                 xy=(np.mean(rem_fields), np.mean(rem_values)), 
-                                 xytext=(np.mean(rem_fields), np.mean(rem_values) + 0.15*(max(intensity)-min(intensity))), 
-                                 ha="center", fontsize=9, color='orange',
-                                 arrowprops=dict(arrowstyle='->', color='orange'))
-        self.ax.legend(loc='best', fontsize=9, frameon=False)
+                self.ax.plot(hc_neg[0], hc_neg[1], 'o', ms=6 * scale, mec=hc_neg_color, mfc='white', mew=1.5 * scale, label='Hc-')
+                self.ax.axvline(x=hc_neg[0], color=hc_neg_color, linestyle=':', alpha=0.7, lw=1.2 * scale)
+                self.ax.annotate(f"Hc-\n{hc_neg[0]:.2f} mT", xy=hc_neg,
+                                 xytext=(hc_neg[0], hc_neg[1] - 0.15 * yrange),
+                                 ha="center", va="top", fontsize=8.5 * scale, color=hc_neg_color,
+                                 bbox=dict(boxstyle='round,pad=0.2', fc='#ffebee', ec=hc_neg_color, lw=0.5 * scale, alpha=0.9),
+                                 arrowprops=dict(arrowstyle='->', color=hc_neg_color, lw=0.8 * scale))
+                                 
+            if rem_fields is not None and rem_values is not None and len(rem_fields) > 0:
+                mean_rf = np.mean(rem_fields)
+                mean_rv = np.mean(rem_values)
+                self.ax.plot(mean_rf, mean_rv, 's', ms=6 * scale, mec=rem_color, mfc='white', mew=1.5 * scale, label='Hr')
+                self.ax.axhline(y=mean_rv, color=rem_color, linestyle=':', alpha=0.6, lw=1.0 * scale)
+                
+                # Make sure annotation arrow starts properly
+                x_offset = 0.15 * (max(field) - min(field)) if len(field) > 0 else 10.0
+                self.ax.annotate(f"Hr\n{mean_rv:.3f}", 
+                                 xy=(mean_rf, mean_rv), 
+                                 xytext=(mean_rf + x_offset, mean_rv), 
+                                 ha="left", va="center", fontsize=8.5 * scale, color=rem_color,
+                                 bbox=dict(boxstyle='round,pad=0.2', fc='#fff3e0', ec=rem_color, lw=0.5 * scale, alpha=0.9),
+                                 arrowprops=dict(arrowstyle='->', color=rem_color, lw=0.8 * scale))
+
+        if show_legend:
+            self.ax.legend(loc='best', fontsize=8.5 * scale, frameon=True, facecolor='#ffffff', edgecolor='#e0e0e0', framealpha=0.9)
+            
+        # Restore limits if we are resizing
+        if hasattr(self, '_resize_limits') and self._resize_limits is not None:
+            xlim, ylim = self._resize_limits
+            self.ax.set_xlim(xlim)
+            self.ax.set_ylim(ylim)
+            self._resize_limits = None
+            
         self.figure.tight_layout()
-        self.canvas.draw()
+        self.canvas.draw_idle()
 
     def correct_intensity(self, field, raw_intens, coeffoverride=None):
         arr = np.asarray(raw_intens, dtype=np.float32)
@@ -796,8 +1496,158 @@ class LoopCorrectionPanel(QWidget):
             f"Hc- = {fmt_or_na(hc_neg, '.2f')}\nRemanence Hr = {fmt_or_na(np.mean(hr_vals), '.3f')}"
         )
         self.hc_hr_output.setText(msg)
-        self.plot_loop(field, ycorr)
+        
+        # Choose title based on whether ROI is used
+        title = "Hysteresis Loop"
+        if parent and parent.loop_intens_subtracted is not None and getattr(parent, 'last_loop_was_roi', False):
+            roi_shape = parent.lbl_img.roi_shape
+            roi_data = parent.lbl_img.roi_data
+            if roi_shape in ["Rectangle", "Square"] and roi_data is not None:
+                cx, cy, w, h, angle = roi_data
+                title = f"Hysteresis Loop (ROI: {roi_shape} at CX:{int(cx)} CY:{int(cy)} W:{int(w)} H:{int(h)} A:{int(angle)}°)"
+            elif roi_shape == "Circle" and roi_data is not None:
+                cx, cy, r = roi_data
+                title = f"Hysteresis Loop (ROI: Circle at CX:{int(cx)} CY:{int(cy)} R:{int(r)})"
+            else:
+                title = f"Hysteresis Loop (ROI: {roi_shape})"
+                
+        self.plot_loop(field, ycorr, show_title=title)
         QMessageBox.information(self, "Hc, Hr", msg)
+
+    def save_loop(self):
+        import datetime
+        parent = self.parent_widget
+        if parent is None or parent.loop_field is None:
+            QMessageBox.warning(self, "No Loop Data", "No hysteresis loop has been generated yet. Please load a dataset first.")
+            return
+
+        raw_intens = parent.loop_intens_subtracted if parent.loop_intens_subtracted is not None else parent.loop_intens_txt
+        if raw_intens is None:
+            QMessageBox.warning(self, "No Loop Data", "No hysteresis loop intensity data available.")
+            return
+
+        field = parent.loop_field
+        corrected_intens = self.correct_intensity(field, raw_intens)
+        
+        save_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Save Hysteresis Loop",
+            "",
+            "Text Files (*.txt);;CSV Files (*.csv);;PNG Image (*.png);;All Files (*)"
+        )
+        
+        if not save_path:
+            return
+            
+        ext = os.path.splitext(save_path)[1].lower()
+        
+        if ext == '.png' or "PNG Image" in selected_filter:
+            if not save_path.lower().endswith('.png'):
+                save_path += '.png'
+            try:
+                # Set saving flag to force scale = 1.0 for output
+                self.is_saving = True
+                
+                # Cache interactive zoom/pan limits
+                old_xlim = self.ax.get_xlim()
+                old_ylim = self.ax.get_ylim()
+                
+                # Replot current data at scale = 1.0
+                self.replot_current_data()
+                
+                # Reset axis limits to show full data
+                self.ax.autoscale(True)
+                self.ax.relim()
+                self.ax.autoscale_view()
+                self.figure.canvas.draw()
+                
+                self.figure.savefig(save_path, dpi=300)
+                
+                # Restore state
+                self.is_saving = False
+                
+                # Replot current data back at GUI scale
+                self.replot_current_data()
+                
+                # Restore interactive zoom/pan limits
+                self.ax.set_xlim(old_xlim)
+                self.ax.set_ylim(old_ylim)
+                self.canvas.draw()
+                
+                QMessageBox.information(self, "Success", f"Plot image saved to:\n{save_path}")
+            except Exception as e:
+                self.is_saving = False
+                try:
+                    self.replot_current_data()
+                    self.ax.set_xlim(old_xlim)
+                    self.ax.set_ylim(old_ylim)
+                    self.canvas.draw()
+                except Exception:
+                    pass
+                QMessageBox.critical(self, "Error", f"Failed to save plot image:\n{e}")
+        else:
+            if not ext:
+                save_path += '.txt'
+                ext = '.txt'
+                
+            sep = ',' if ext == '.csv' else '\t'
+            
+            try:
+                with open(save_path, 'w', encoding='utf-8') as f:
+                    f.write(f"# KerrPyLooper Hysteresis Loop Export\n")
+                    f.write(f"# Export Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"#\n")
+                    
+                    if parent.lbl_img.roi_shape != "None" and parent.lbl_img.roi_data is not None:
+                        roi_shape = parent.lbl_img.roi_shape
+                        f.write(f"# ROI Type: {roi_shape}\n")
+                        if roi_shape in ["Rectangle", "Square"]:
+                            cx, cy, w, h, angle = parent.lbl_img.roi_data
+                            f.write(f"# ROI Center X: {cx:.2f}\n")
+                            f.write(f"# ROI Center Y: {cy:.2f}\n")
+                            f.write(f"# ROI Width: {w:.2f}\n")
+                            f.write(f"# ROI Height: {h:.2f}\n")
+                            f.write(f"# ROI Angle: {angle:.2f} deg\n")
+                        elif roi_shape == "Circle":
+                            cx, cy, r = parent.lbl_img.roi_data
+                            f.write(f"# ROI Center X: {cx:.2f}\n")
+                            f.write(f"# ROI Center Y: {cy:.2f}\n")
+                            f.write(f"# ROI Radius: {r:.2f}\n")
+                    else:
+                        f.write(f"# ROI Type: None (Full Frame Mean)\n")
+                        
+                    f.write(f"#\n")
+                    f.write(f"# Drift Coefficient: {self.coeffs['drift']:.6e}\n")
+                    f.write(f"# Linear Faraday: {self.coeffs['linear']:.6e}\n")
+                    f.write(f"# Quadratic Faraday: {self.coeffs['quad']:.6e}\n")
+                    f.write(f"# Quadratic Field Offset: {self.coeffs['quad_offset']:.6f} mT\n")
+                    f.write(f"# Intensity Normalized: {self.normalize}\n")
+                    
+                    z_enabled = self.chk_z_drift.isChecked()
+                    f.write(f"# Z-Drift Correction Enabled: {z_enabled}\n")
+                    if z_enabled:
+                        f.write(f"# Z-Drift Focus Coeff: {self.spin_z_quad.value():.6e}\n")
+                        f.write(f"# Z-Drift Method: {self.cmb_z_method.currentText()}\n")
+                    
+                    if self.hc_hr_marks is not None:
+                        hc_pos, hc_neg, rem_fields, rem_values = self.hc_hr_marks
+                        f.write(f"# Coercivity Hc+: {hc_pos[0]:.2f} mT\n" if hc_pos is not None else "# Coercivity Hc+: n/a\n")
+                        f.write(f"# Coercivity Hc-: {hc_neg[0]:.2f} mT\n" if hc_neg is not None else "# Coercivity Hc-: n/a\n")
+                        f.write(f"# Remanence Hr: {np.mean(rem_values):.3f}\n" if rem_values is not None else "# Remanence Hr: n/a\n")
+                        
+                    f.write(f"#\n")
+                    f.write(f"Field_mT{sep}Raw_Intensity{sep}Corrected_Intensity\n")
+                    for fd, ri, ci in zip(field, raw_intens, corrected_intens):
+                        f.write(f"{fd:.6f}{sep}{ri:.6f}{sep}{ci:.6f}\n")
+                
+                img_path = os.path.splitext(save_path)[0] + '.png'
+                try:
+                    self.figure.savefig(img_path, dpi=300)
+                    QMessageBox.information(self, "Saved", f"Data exported successfully to:\n{save_path}\n\nPlot image saved successfully to:\n{img_path}")
+                except Exception as e_img:
+                    QMessageBox.warning(self, "Warning", f"Data saved to:\n{save_path}\n\nBut failed to save plot image:\n{e_img}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save data file:\n{e}")
 
 class MOKEImageSubtractor(QWidget):
     def __init__(self):
@@ -820,10 +1670,12 @@ class MOKEImageSubtractor(QWidget):
         self.loop_intens_subtracted = None
         self.mean_index = None
         self.mean_field = None
+        self.last_loop_was_roi = False
         self.init_ui()
 
     def init_ui(self):
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = StyledSplitter(Qt.Horizontal)
+        splitter.setHandleWidth(8)
         widget_left = QWidget()
         left_layout = QVBoxLayout()
         self.btn_dir = QPushButton("Select Hysteresis Image Directory")
@@ -848,9 +1700,87 @@ class MOKEImageSubtractor(QWidget):
         self.btn_make_loop.clicked.connect(self.run_subtraction_loop)
         self.btn_make_loop.setEnabled(False)
         left_layout.addWidget(self.btn_make_loop)
-        self.lbl_img = QLabel("Preview will appear here")
+        # Horizontal layout for preview and ROI tools
+        hbox_img_roi = QHBoxLayout()
+        
+        # Wrap image label and its contrast slider in a vertical layout
+        img_preview_layout = QVBoxLayout()
+        
+        # Contrast slider directly above the image
+        hbox_contrast = QHBoxLayout()
+        hbox_contrast.addWidget(QLabel("Contrast Stretch:"))
+        self.sld_img_contrast = QSlider(Qt.Horizontal)
+        self.sld_img_contrast.setMinimum(10)
+        self.sld_img_contrast.setMaximum(400)
+        self.sld_img_contrast.setValue(100)
+        self.sld_img_contrast.valueChanged.connect(self.img_contrast_changed)
+        
+        self.spin_img_contrast = QDoubleSpinBox()
+        self.spin_img_contrast.setDecimals(2)
+        self.spin_img_contrast.setRange(0.1, 4.0)
+        self.spin_img_contrast.setSingleStep(0.01)
+        self.spin_img_contrast.setValue(1.0)
+        self.spin_img_contrast.valueChanged.connect(self.img_contrast_spinbox_changed)
+        
+        hbox_contrast.addWidget(self.sld_img_contrast)
+        hbox_contrast.addWidget(self.spin_img_contrast)
+        img_preview_layout.addLayout(hbox_contrast)
+        
+        self.lbl_img = ROISelectLabel(self)
         self.lbl_img.setAlignment(Qt.AlignCenter)
-        left_layout.addWidget(self.lbl_img, stretch=1)
+        self.lbl_img.roi_changed.connect(self.on_roi_changed)
+        img_preview_layout.addWidget(self.lbl_img, stretch=1)
+        
+        hbox_img_roi.addLayout(img_preview_layout, stretch=1)
+        
+        # ROI Tools panel
+        roi_group = QGroupBox("ROI Settings")
+        roi_layout = QFormLayout()
+        
+        self.cmb_roi_shape = QComboBox()
+        self.cmb_roi_shape.addItems(["None", "Rectangle", "Square", "Circle"])
+        self.cmb_roi_shape.currentIndexChanged.connect(self.on_roi_shape_changed)
+        roi_layout.addRow("Shape:", self.cmb_roi_shape)
+        
+        self.spin_roi_x = QSpinBox()
+        self.spin_roi_x.setRange(0, 2000)
+        self.spin_roi_x.setEnabled(False)
+        self.spin_roi_x.valueChanged.connect(self.on_roi_spinbox_changed)
+        roi_layout.addRow("X / Center X:", self.spin_roi_x)
+        
+        self.spin_roi_y = QSpinBox()
+        self.spin_roi_y.setRange(0, 2000)
+        self.spin_roi_y.setEnabled(False)
+        self.spin_roi_y.valueChanged.connect(self.on_roi_spinbox_changed)
+        roi_layout.addRow("Y / Center Y:", self.spin_roi_y)
+        
+        self.spin_roi_w = QSpinBox()
+        self.spin_roi_w.setRange(1, 2000)
+        self.spin_roi_w.setEnabled(False)
+        self.spin_roi_w.valueChanged.connect(self.on_roi_spinbox_changed)
+        roi_layout.addRow("Width / Radius:", self.spin_roi_w)
+        
+        self.spin_roi_h = QSpinBox()
+        self.spin_roi_h.setRange(1, 2000)
+        self.spin_roi_h.setEnabled(False)
+        self.spin_roi_h.valueChanged.connect(self.on_roi_spinbox_changed)
+        roi_layout.addRow("Height:", self.spin_roi_h)
+        
+        self.spin_roi_angle = QSpinBox()
+        self.spin_roi_angle.setRange(-180, 180)
+        self.spin_roi_angle.setEnabled(False)
+        self.spin_roi_angle.valueChanged.connect(self.on_roi_spinbox_changed)
+        roi_layout.addRow("Angle (deg):", self.spin_roi_angle)
+        
+        self.btn_clear_roi = QPushButton("Clear Selection")
+        self.btn_clear_roi.clicked.connect(self.clear_roi)
+        roi_layout.addRow(self.btn_clear_roi)
+        
+        roi_group.setLayout(roi_layout)
+        roi_group.setFixedWidth(200)
+        hbox_img_roi.addWidget(roi_group)
+        
+        left_layout.addLayout(hbox_img_roi, stretch=1)
 
         # Contrast slider below image preview
 
@@ -868,15 +1798,146 @@ class MOKEImageSubtractor(QWidget):
         layout.addWidget(splitter)
         self.setLayout(layout)
 
+    def on_roi_shape_changed(self, idx):
+        shape = self.cmb_roi_shape.currentText()
+        self.lbl_img.set_roi_shape(shape)
+        
+        if shape == "None":
+            self.spin_roi_x.setEnabled(False)
+            self.spin_roi_y.setEnabled(False)
+            self.spin_roi_w.setEnabled(False)
+            self.spin_roi_h.setEnabled(False)
+            self.spin_roi_angle.setEnabled(False)
+            self.lbl_img.clear_roi()
+        else:
+            self.spin_roi_x.setEnabled(True)
+            self.spin_roi_y.setEnabled(True)
+            self.spin_roi_w.setEnabled(True)
+            
+            if shape == "Rectangle":
+                self.spin_roi_h.setEnabled(True)
+                self.spin_roi_angle.setEnabled(True)
+            elif shape == "Square":
+                self.spin_roi_h.setEnabled(False)
+                self.spin_roi_angle.setEnabled(True)
+            else: # Circle
+                self.spin_roi_h.setEnabled(False)
+                self.spin_roi_angle.setEnabled(False)
+                
+            if self.lbl_img.pixmap() and not self.lbl_img.pixmap().isNull():
+                pw, ph = self.lbl_img.pixmap().width(), self.lbl_img.pixmap().height()
+                self.update_roi_spinbox_ranges(pw, ph)
+                
+                if shape in ["Rectangle", "Square"]:
+                    size = 100
+                    cx = pw // 2
+                    cy = ph // 2
+                    self.lbl_img.roi_data = (cx, cy, size, size, 0.0)
+                elif shape == "Circle":
+                    cx = pw // 2
+                    cy = ph // 2
+                    r = 50
+                    self.lbl_img.roi_data = (cx, cy, r)
+                    
+                self.update_spinboxes_from_roi()
+                self.lbl_img.update()
+
+    def update_roi_spinbox_ranges(self, pw, ph):
+        self.spin_roi_x.setRange(0, pw - 1)
+        self.spin_roi_y.setRange(0, ph - 1)
+        self.spin_roi_w.setRange(1, pw)
+        self.spin_roi_h.setRange(1, ph)
+
+    def update_spinboxes_from_roi(self):
+        roi_data = self.lbl_img.roi_data
+        shape = self.lbl_img.roi_shape
+        if roi_data is None:
+            return
+            
+        self.spin_roi_x.blockSignals(True)
+        self.spin_roi_y.blockSignals(True)
+        self.spin_roi_w.blockSignals(True)
+        self.spin_roi_h.blockSignals(True)
+        self.spin_roi_angle.blockSignals(True)
+        
+        if shape in ["Rectangle", "Square"]:
+            cx, cy, w, h, angle = roi_data
+            self.spin_roi_x.setValue(int(cx))
+            self.spin_roi_y.setValue(int(cy))
+            self.spin_roi_w.setValue(int(w))
+            self.spin_roi_h.setValue(int(h))
+            self.spin_roi_angle.setValue(int(angle))
+        elif shape == "Circle":
+            cx, cy, r = roi_data
+            self.spin_roi_x.setValue(int(cx))
+            self.spin_roi_y.setValue(int(cy))
+            self.spin_roi_w.setValue(int(r))
+            self.spin_roi_h.setValue(int(r))
+            self.spin_roi_angle.setValue(0)
+            
+        self.spin_roi_x.blockSignals(False)
+        self.spin_roi_y.blockSignals(False)
+        self.spin_roi_w.blockSignals(False)
+        self.spin_roi_h.blockSignals(False)
+        self.spin_roi_angle.blockSignals(False)
+
+    def on_roi_spinbox_changed(self, _):
+        shape = self.lbl_img.roi_shape
+        if shape == "None":
+            return
+            
+        cx = self.spin_roi_x.value()
+        cy = self.spin_roi_y.value()
+        w = self.spin_roi_w.value()
+        h = self.spin_roi_h.value()
+        angle = self.spin_roi_angle.value()
+        
+        if shape == "Rectangle":
+            self.lbl_img.roi_data = (cx, cy, w, h, angle)
+        elif shape == "Square":
+            self.lbl_img.roi_data = (cx, cy, w, w, angle)
+            self.spin_roi_h.blockSignals(True)
+            self.spin_roi_h.setValue(w)
+            self.spin_roi_h.blockSignals(False)
+        elif shape == "Circle":
+            self.lbl_img.roi_data = (cx, cy, w)
+            self.spin_roi_h.blockSignals(True)
+            self.spin_roi_h.setValue(w)
+            self.spin_roi_h.blockSignals(False)
+            
+        self.lbl_img.update()
+
+    def on_roi_changed(self):
+        self.update_spinboxes_from_roi()
+
+    def clear_roi(self):
+        self.cmb_roi_shape.setCurrentIndex(0)
+
     def request_loop_update(self):
         if self.loop_field is not None and self.loop_intens_txt is not None:
             values = self.loop_intens_subtracted if self.loop_intens_subtracted is not None else self.loop_intens_txt
-            self.loop_panel.plot_loop(self.loop_field, self.loop_panel.correct_intensity(self.loop_field, values))
+            
+            # Choose title based on whether ROI is used
+            title = "Hysteresis Loop"
+            if self.loop_intens_subtracted is not None and getattr(self, 'last_loop_was_roi', False):
+                roi_shape = self.lbl_img.roi_shape
+                roi_data = self.lbl_img.roi_data
+                if roi_shape in ["Rectangle", "Square"] and roi_data is not None:
+                    cx, cy, w, h, angle = roi_data
+                    title = f"Hysteresis Loop (ROI: {roi_shape} at CX:{int(cx)} CY:{int(cy)} W:{int(w)} H:{int(h)} A:{int(angle)}°)"
+                elif roi_shape == "Circle" and roi_data is not None:
+                    cx, cy, r = roi_data
+                    title = f"Hysteresis Loop (ROI: Circle at CX:{int(cx)} CY:{int(cy)} R:{int(r)})"
+                else:
+                    title = f"Hysteresis Loop (ROI: {roi_shape})"
+                    
+            self.loop_panel.plot_loop(self.loop_field, self.loop_panel.correct_intensity(self.loop_field, values), show_title=title)
 
     def choose_directory(self):
         d = QFileDialog.getExistingDirectory(self, "Select Image Directory")
         if d:
             self.img_dir = d
+            self.clear_roi()
             self.update_image_list()
             self.list_results.clear()
             self.lbl_img.setText("Preview will appear here")
@@ -971,12 +2032,16 @@ class MOKEImageSubtractor(QWidget):
     def img_contrast_changed(self, val):
         contrast_val = val / 100.0
         self.loop_panel.contrast = contrast_val
-        self.loop_panel.sld_contrast.blockSignals(True)
-        self.loop_panel.spin_contrast.blockSignals(True)
-        self.loop_panel.sld_contrast.setValue(val)
-        self.loop_panel.spin_contrast.setValue(contrast_val)
-        self.loop_panel.sld_contrast.blockSignals(False)
-        self.loop_panel.spin_contrast.blockSignals(False)
+        self.spin_img_contrast.blockSignals(True)
+        self.spin_img_contrast.setValue(contrast_val)
+        self.spin_img_contrast.blockSignals(False)
+        self.show_current_subtracted_image_contrast_only()
+
+    def img_contrast_spinbox_changed(self, val):
+        self.loop_panel.contrast = val
+        self.sld_img_contrast.blockSignals(True)
+        self.sld_img_contrast.setValue(int(val * 100))
+        self.sld_img_contrast.blockSignals(False)
         self.show_current_subtracted_image_contrast_only()
 
     def display_image(self, filepath):
@@ -999,6 +2064,7 @@ class MOKEImageSubtractor(QWidget):
             qimg = QImage(data, w, h, QImage.Format_Grayscale8)
         pix = QPixmap.fromImage(qimg)
         self.lbl_img.setPixmap(pix)
+        self.update_roi_spinbox_ranges(pix.width(), pix.height())
 
     def set_background(self):
         idx = self.list_images.currentRow()
@@ -1093,6 +2159,7 @@ class MOKEImageSubtractor(QWidget):
             qimg = QImage(data, w, h, QImage.Format_Grayscale8)
             pix = QPixmap.fromImage(qimg)
             self.lbl_img.setPixmap(pix)
+            self.update_roi_spinbox_ranges(pix.width(), pix.height())
             self.current_difference_img = show_img
             return
             
@@ -1119,6 +2186,7 @@ class MOKEImageSubtractor(QWidget):
         qimg = QImage(data, w, h, QImage.Format_Grayscale8)
         pix = QPixmap.fromImage(qimg)
         self.lbl_img.setPixmap(pix)
+        self.update_roi_spinbox_ranges(pix.width(), pix.height())
         self.current_difference_img = show_img
 
     def save_current_result(self):
@@ -1154,6 +2222,11 @@ class MOKEImageSubtractor(QWidget):
         enable_z = self.loop_panel.chk_z_drift.isChecked()
         coeff = self.loop_panel.spin_z_quad.value() * 1e-6
         method_idx = self.loop_panel.cmb_z_method.currentIndex()
+        
+        # Check ROI selection
+        roi_shape = self.lbl_img.roi_shape
+        roi_data = self.lbl_img.roi_data
+        enable_roi = (roi_shape != "None" and roi_data is not None)
         
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
@@ -1206,11 +2279,15 @@ class MOKEImageSubtractor(QWidget):
                     arr_cropped = crop600(arr)
                     
                     # Store raw subtraction (do not bake the correction in)
-                    mean_val = np.mean(arr_cropped)
+                    if enable_roi:
+                        mean_val = get_roi_mean(arr_cropped, roi_shape, roi_data)
+                    else:
+                        mean_val = np.mean(arr_cropped)
                     means.append(mean_val)
                 except Exception as e:
                     print(f"Error processing {img_file}: {e}")
                     means.append(np.nan)
+            self.last_loop_was_roi = enable_roi
             self.loop_intens_subtracted = np.array(means, dtype=np.float32)
             
             # Dynamically adjust correction ranges based on subtracted intensity
