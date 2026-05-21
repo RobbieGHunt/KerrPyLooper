@@ -31,13 +31,31 @@ class StyledSplitterHandle(QSplitterHandle):
         super().paintEvent(event)
         painter = QPainter(self)
         
-        # Fill background with a desaturated light-grey theme color
-        painter.fillRect(self.rect(), QColor(240, 240, 240))
+        # Try to find theme from parent widgets
+        theme = "dark"
+        p = self.splitter()
+        while p:
+            if hasattr(p, "theme"):
+                theme = p.theme
+                break
+            p = p.parent()
+            
+        if theme == "dark":
+            bg_color = QColor("#1e293b")  # Slate 800
+            border_color = QColor("#334155")  # Slate 700
+            grip_color = QColor("#6366f1")  # Indigo
+        else:
+            bg_color = QColor("#cbd5e1")  # Slate 300
+            border_color = QColor("#cbd5e1")  # Slate 300
+            grip_color = QColor("#4f46e5")  # Indigo
+            
+        # Fill background
+        painter.fillRect(self.rect(), bg_color)
         
         w, h = self.width(), self.height()
         
-        # Draw desaturated border lines
-        pen_border = QPen(QColor(215, 215, 215), 1, Qt.SolidLine)
+        # Draw border lines
+        pen_border = QPen(border_color, 1, Qt.SolidLine)
         painter.setPen(pen_border)
         if self.orientation() == Qt.Horizontal:
             painter.drawLine(0, 0, 0, h)
@@ -46,8 +64,8 @@ class StyledSplitterHandle(QSplitterHandle):
             painter.drawLine(0, 0, w, 0)
             painter.drawLine(0, h - 1, w, h - 1)
             
-        # Draw 3 neat desaturated grip indicators in the center
-        pen_grip = QPen(QColor(130, 130, 130), 2, Qt.SolidLine)
+        # Draw 3 neat grip indicators in the center
+        pen_grip = QPen(grip_color, 2, Qt.SolidLine)
         painter.setPen(pen_grip)
         
         if self.orientation() == Qt.Horizontal:
@@ -72,14 +90,14 @@ class StyledSplitter(QSplitter):
 def crop600(arr):
     h, w = arr.shape[0], arr.shape[1]
     h_crop = min(h, 600)
-    w_crop = min(w, 600)
+    w_crop = min(w, 900)
     w_start = (w - w_crop) // 2
     if arr.ndim == 3:
         return arr[:h_crop, w_start:w_start+w_crop, :]
     else:
         return arr[:h_crop, w_start:w_start+w_crop]
 
-def normalized_for_display(arr, scale=None, contrast=1.0):
+def normalized_for_display(arr, scale=None, contrast=0.5):
     arr = arr.astype(np.float32)
     arr = crop600(arr)
     if scale is None or scale == 0:
@@ -573,8 +591,15 @@ class LoopCorrectionPanel(QWidget):
         plot_layout = QVBoxLayout()
         plot_layout.setContentsMargins(0, 0, 0, 0)
         
-        self.figure = Figure(figsize=(4, 6))
+        theme = "dark"
+        if self.parent_widget and hasattr(self.parent_widget, 'theme'):
+            theme = self.parent_widget.theme
+        fig_bg = "#1e293b" if theme == "dark" else "#ffffff"
+        ax_bg = "#0f172a" if theme == "dark" else "#f8fafc"
+        
+        self.figure = Figure(figsize=(4, 6), facecolor=fig_bg)
         self.ax = self.figure.add_subplot(111)
+        self.ax.set_facecolor(ax_bg)
         self.canvas = FigureCanvas(self.figure)
         self.canvas.setMinimumHeight(100)
         
@@ -639,14 +664,14 @@ class LoopCorrectionPanel(QWidget):
         # Quadratic Faraday
         hbox_quad = QHBoxLayout()
         self.sld_quad = QSlider(Qt.Horizontal)
-        self.sld_quad.setMinimum(-10)
-        self.sld_quad.setMaximum(10)
+        self.sld_quad.setMinimum(-20)
+        self.sld_quad.setMaximum(20)
         self.sld_quad.setValue(0)
         self.sld_quad.valueChanged.connect(self.slider_changed)
         self.spin_quad = QDoubleSpinBox()
-        self.spin_quad.setDecimals(4)
-        self.spin_quad.setRange(-0.01, 0.01)
-        self.spin_quad.setSingleStep(0.001)
+        self.spin_quad.setDecimals(6)
+        self.spin_quad.setRange(-0.001, 0.001)
+        self.spin_quad.setSingleStep(0.00001)
         self.spin_quad.setValue(0.0)
         self.spin_quad.valueChanged.connect(self.spinbox_changed)
         hbox_quad.addWidget(self.sld_quad)
@@ -1231,14 +1256,39 @@ class LoopCorrectionPanel(QWidget):
         self.ax.plot(field, intensity, color=line_color, linestyle=line_style, 
                      marker=marker_style, lw=1.5 * scale, markersize=4 * scale, label='MOKE intensity')
         
-        self.ax.set_xlabel(xlabel_text, fontsize=18 * scale, fontweight='normal')
-        self.ax.set_ylabel(ylabel_text, fontsize=18 * scale, fontweight='normal')
+        # Determine theme dynamically
+        theme = "dark"
+        if self.parent_widget and hasattr(self.parent_widget, 'theme'):
+            theme = self.parent_widget.theme
+            
+        if theme == "dark":
+            fig_bg = "#1e293b" # Slate 800
+            ax_bg = "#0f172a"  # Slate 900
+            text_color = "#f8fafc" # Slate 50
+            grid_color = "#334155" # Slate 700
+            spine_color = "#475569" # Slate 600
+        else:
+            fig_bg = "#ffffff"
+            ax_bg = "#f8fafc"
+            text_color = "#0f172a"
+            grid_color = "#e2e8f0"
+            spine_color = "#cbd5e1"
+            
+        self.figure.patch.set_facecolor(fig_bg)
+        self.ax.set_facecolor(ax_bg)
+        self.ax.xaxis.label.set_color(text_color)
+        self.ax.yaxis.label.set_color(text_color)
+        if self.ax.title:
+            self.ax.title.set_color(text_color)
+        
+        self.ax.set_xlabel(xlabel_text, fontsize=18 * scale, fontweight='normal', color=text_color)
+        self.ax.set_ylabel(ylabel_text, fontsize=18 * scale, fontweight='normal', color=text_color)
         if display_title:
-            self.ax.set_title(display_title, fontsize=11 * scale, fontweight='normal', pad=10 * scale)
+            self.ax.set_title(display_title, fontsize=11 * scale, fontweight='normal', pad=10 * scale, color=text_color)
         
         # Configure Grid
         if show_grid:
-            self.ax.grid(True, which='both', color='#e0e0e0', linestyle=grid_style, linewidth=1 * scale)
+            self.ax.grid(True, which='both', color=grid_color, linestyle=grid_style, linewidth=1 * scale)
         else:
             self.ax.grid(False)
             
@@ -1246,21 +1296,22 @@ class LoopCorrectionPanel(QWidget):
         if pub_ticks:
             self.ax.tick_params(axis='both', which='major', direction='in', 
                                 top=True, right=True, bottom=True, left=True,
-                                labelsize=9.5 * scale, width=1.0 * scale, length=5.0 * scale)
+                                labelsize=9.5 * scale, width=1.0 * scale, length=5.0 * scale, colors=text_color)
             self.ax.tick_params(axis='both', which='minor', direction='in',
                                 top=True, right=True, bottom=True, left=True,
-                                width=0.75 * scale, length=2.5 * scale)
+                                width=0.75 * scale, length=2.5 * scale, colors=text_color)
             self.ax.minorticks_on()
         else:
             self.ax.tick_params(axis='both', which='both', direction='out',
                                 top=False, right=False, bottom=True, left=True,
-                                labelsize=9.5 * scale, width=1.0 * scale, length=5.0 * scale)
+                                labelsize=9.5 * scale, width=1.0 * scale, length=5.0 * scale, colors=text_color)
             self.ax.minorticks_off()
             
         # Style Spines (Borders)
         for spine in self.ax.spines.values():
             spine.set_linewidth(1.0 * scale)
-            spine.set_color('#1a1a1a')
+            spine.set_color(spine_color)
+            
             
         # Highlight Hc/Hr if they exist and checkbox is checked
         if show_highlights and self.hc_hr_marks is not None:
@@ -1344,59 +1395,120 @@ class LoopCorrectionPanel(QWidget):
         parent = self.parent_widget
         if parent is None or parent.loop_field is None:
             return
-        field = parent.loop_field
-        intensity0 = parent.loop_intens_subtracted if parent.loop_intens_subtracted is not None else parent.loop_intens_txt
-        idx = np.arange(len(field))
-        idx_off = idx - idx.mean()
-        field_off = field - np.mean(field)
-        drift1 = (intensity0[0] - intensity0[-1]) / len(intensity0)
+        field      = parent.loop_field
+        intensity0 = (parent.loop_intens_subtracted
+                      if parent.loop_intens_subtracted is not None
+                      else parent.loop_intens_txt)
+
+        idx           = np.arange(len(field))
+        idx_off       = idx - idx.mean()
+        field_off     = field - np.mean(field)
+        field_abs_max = float(np.max(np.abs(field_off)))
+
+        # ------------------------------------------------------------------
+        # Pass 1 – endpoint drift alignment
+        # ------------------------------------------------------------------
+        drift1     = float((intensity0[0] - intensity0[-1]) / len(intensity0))
         intensity1 = intensity0 + drift1 * idx_off
-        high_percent = 0.8
-        field_abs = np.abs(field_off)
-        field_abs_max = np.max(field_abs)
-        fit_mask = field_abs > (high_percent * field_abs_max)
-        if np.sum(fit_mask) < 3:
-            fit_mask = np.ones_like(field, dtype=bool)
-        
-        # Fit 2nd order polynomial
-        polyfit1 = np.polyfit(field_off[fit_mask], intensity1[fit_mask], 2)
-        a, b, c = polyfit1[0], polyfit1[1], polyfit1[2]
-        quad1 = -a
-        quad_offset_val = -b / (2.0 * a) if a != 0 else 0.0
-        
-        # Extra refinement step to correct remaining linear slope in saturated regions
-        temp_corr = (intensity0 
-            + drift1 * idx_off
-            + quad1 * ((field_off - quad_offset_val)**2)
-        )
-        mask_pos = field_off > (high_percent * field_abs_max)
-        mask_neg = field_off < (-high_percent * field_abs_max)
-        if np.sum(mask_pos) >= 2 and np.sum(mask_neg) >= 2:
-            p_pos = np.polyfit(field_off[mask_pos], temp_corr[mask_pos], 1)
-            p_neg = np.polyfit(field_off[mask_neg], temp_corr[mask_neg], 1)
-            avg_slope = 0.5 * (p_pos[0] + p_neg[0])
-            linear_val = -avg_slope
+
+        # ------------------------------------------------------------------
+        # Branch separation (ascending vs descending field sweep).
+        # Fitting both branches together at the same field values distorts the
+        # Faraday estimate because the two branches carry a hysteresis offset.
+        # ------------------------------------------------------------------
+        i_min = int(np.argmin(field))
+        i_max = int(np.argmax(field))
+        if i_min < i_max:
+            asc_idx  = np.arange(i_min, i_max + 1)
+            desc_idx = np.concatenate([np.arange(i_max, len(field)),
+                                       np.arange(0, i_min + 1)])
         else:
-            linear_val = 0.0
-        
+            desc_idx = np.arange(i_max, i_min + 1)
+            asc_idx  = np.concatenate([np.arange(i_min, len(field)),
+                                       np.arange(0, i_max + 1)])
+
+        # ------------------------------------------------------------------
+        # ------------------------------------------------------------------
+        # Linear Faraday: fit positive and negative saturation shelves
+        # independently on each branch, then average. This prevents the
+        # hysteresis step from biasing the Faraday slope.
+        # ------------------------------------------------------------------
+        sat_threshold = 0.80 * field_abs_max
+        slopes = []
+        for branch_idx in (asc_idx, desc_idx):
+            f_b = field_off[branch_idx]
+            y_b = intensity1[branch_idx]
+            sat_pos = f_b > sat_threshold
+            sat_neg = f_b < -sat_threshold
+            branch_slopes = []
+            if np.sum(sat_pos) >= 2:
+                p_pos = np.polyfit(f_b[sat_pos], y_b[sat_pos], 1)
+                branch_slopes.append(p_pos[0])
+            if np.sum(sat_neg) >= 2:
+                p_neg = np.polyfit(f_b[sat_neg], y_b[sat_neg], 1)
+                branch_slopes.append(p_neg[0])
+            if branch_slopes:
+                slopes.append(np.mean(branch_slopes))
+
+        linear_val = -float(np.mean(slopes)) if slopes else 0.0
+        intensity2 = intensity1 + linear_val * field_off
+
+        # ------------------------------------------------------------------
+        # Residual quadratic (Cotton–Mouton): fit on the step-subtracted
+        # background to prevent the MOKE step height from biasing the parameters.
+        # ------------------------------------------------------------------
+        sat_pos = field_off > sat_threshold
+        sat_neg = field_off < -sat_threshold
+        sat_all = sat_pos | sat_neg
+
+        quad1           = 0.0
+        quad_offset_val = 0.0
+
+        if np.sum(sat_pos) >= 2 and np.sum(sat_neg) >= 2:
+            # Subtract shelf means to get background-only signal at saturation
+            M_pos = np.mean(intensity2[sat_pos])
+            M_neg = np.mean(intensity2[sat_neg])
+            y_bg = intensity2.copy()
+            y_bg[sat_pos] -= M_pos
+            y_bg[sat_neg] -= M_neg
+
+            p2 = np.polyfit(field_off[sat_all], y_bg[sat_all], 2)
+            a2, b2 = float(p2[0]), float(p2[1])
+            if abs(a2) > 0:
+                candidate_offset = -b2 / (2.0 * a2)
+                if abs(candidate_offset) <= field_abs_max:
+                    # Physically plausible vertex position – use full quadratic
+                    quad1           = -a2
+                    quad_offset_val = candidate_offset
+                    linear_val      -= b2
+                else:
+                    # Vertex far outside field range – absorb only linear part
+                    linear_val -= b2
+
+        # ------------------------------------------------------------------
+        # Pass 2 – second drift correction after shape corrections
+        # ------------------------------------------------------------------
+        intensity3 = intensity1 + linear_val * field_off + quad1 * (field_off - quad_offset_val) ** 2
+        drift2     = float((intensity3[0] - intensity3[-1]) / len(intensity3))
+
         # Automatically apply the normalization
         self.normalize = True
         self.btn_norm.setChecked(True)
-        
-        # Update sliders & spinboxes (ranges already adjusted to prevent clipping)
-        self.set_slider_spinbox('drift', drift1)
+
+        # Update sliders & spinboxes
+        self.set_slider_spinbox('drift', drift1 + drift2)
         self.set_slider_spinbox('quad', quad1)
         self.set_slider_spinbox('quad_offset', quad_offset_val)
         self.set_slider_spinbox('linear', linear_val)
-        
+
         # Save exact coefficients from spinboxes
-        self.coeffs['drift'] = self.spin_drift.value()
-        self.coeffs['quad'] = self.spin_quad.value()
+        self.coeffs['drift']       = self.spin_drift.value()
+        self.coeffs['quad']        = self.spin_quad.value()
         self.coeffs['quad_offset'] = self.spin_quad_offset.value()
-        self.coeffs['linear'] = self.spin_linear.value()
+        self.coeffs['linear']      = self.spin_linear.value()
 
         self.hc_hr_marks = None  # clear markers
-        
+
         # Instantly update loop plot and subtracted image display
         if self.parent_widget:
             self.parent_widget.request_loop_update()
@@ -1650,8 +1762,10 @@ class LoopCorrectionPanel(QWidget):
                 QMessageBox.critical(self, "Error", f"Failed to save data file:\n{e}")
 
 class MOKEImageSubtractor(QWidget):
-    def __init__(self):
+    def __init__(self, theme="dark"):
         super().__init__()
+        self.theme = theme
+        self.setObjectName("MainBg")
         self.setWindowTitle("MOKE Image Subtraction Analysis")
         self.img_dir = None
         self.image_files = []
@@ -1683,12 +1797,14 @@ class MOKEImageSubtractor(QWidget):
         left_layout.addWidget(self.btn_dir)
         self.list_images = QListWidget()
         self.list_images.currentRowChanged.connect(self.on_image_selected)
-        left_layout.addWidget(QLabel("Select Background Image:"))
+        self.lbl_select_bg = QLabel("Select Background Image:")
+        left_layout.addWidget(self.lbl_select_bg)
         left_layout.addWidget(self.list_images)
         self.btn_set_bg = QPushButton("Set as Background")
         self.btn_set_bg.clicked.connect(self.set_background)
         left_layout.addWidget(self.btn_set_bg)
-        left_layout.addWidget(QLabel("Browse Images & View Subtraction:"))
+        self.lbl_browse_images = QLabel("Browse Images & View Subtraction:")
+        left_layout.addWidget(self.lbl_browse_images)
         self.list_results = QListWidget()
         self.list_results.currentRowChanged.connect(self.show_subtracted_image)
         left_layout.addWidget(self.list_results)
@@ -1710,8 +1826,8 @@ class MOKEImageSubtractor(QWidget):
         hbox_contrast = QHBoxLayout()
         hbox_contrast.addWidget(QLabel("Contrast Stretch:"))
         self.sld_img_contrast = QSlider(Qt.Horizontal)
-        self.sld_img_contrast.setMinimum(10)
-        self.sld_img_contrast.setMaximum(400)
+        self.sld_img_contrast.setMinimum(00)
+        self.sld_img_contrast.setMaximum(200)
         self.sld_img_contrast.setValue(100)
         self.sld_img_contrast.valueChanged.connect(self.img_contrast_changed)
         
@@ -1724,6 +1840,13 @@ class MOKEImageSubtractor(QWidget):
         
         hbox_contrast.addWidget(self.sld_img_contrast)
         hbox_contrast.addWidget(self.spin_img_contrast)
+        
+        hbox_contrast.addWidget(QLabel("Colormap:"))
+        self.cmb_colormap = QComboBox()
+        self.cmb_colormap.addItems(["gray", "plasma", "seismic", "viridis", "magma"])
+        self.cmb_colormap.currentTextChanged.connect(self.show_current_subtracted_image_contrast_only)
+        hbox_contrast.addWidget(self.cmb_colormap)
+        
         img_preview_layout.addLayout(hbox_contrast)
         
         self.lbl_img = ROISelectLabel(self)
@@ -1797,6 +1920,9 @@ class MOKEImageSubtractor(QWidget):
         layout = QVBoxLayout()
         layout.addWidget(splitter)
         self.setLayout(layout)
+        
+        from gui_styles import apply_theme
+        apply_theme(self, self.theme)
 
     def on_roi_shape_changed(self, idx):
         shape = self.cmb_roi_shape.currentText()
@@ -1949,13 +2075,15 @@ class MOKEImageSubtractor(QWidget):
             self.mean_index = None
             self.mean_field = None
             self.lbl_img.setText("Preview will appear here")
+            self.update_select_bg_label(None, is_set=False)
+            self.update_browse_images_label(None)
             self.update_image_list()
-            self.list_results.clear()
             self.load_txt_data()
 
     def get_field_for_file(self, filename):
         if self.txt_data is not None:
-            match = self.txt_data[self.txt_data['File'] == filename]
+            clean_fn = filename.strip()
+            match = self.txt_data[self.txt_data['File'] == clean_fn]
             if not match.empty:
                 return float(match.iloc[0]['Field'])
         return None
@@ -1983,7 +2111,7 @@ class MOKEImageSubtractor(QWidget):
         ]
         self.image_files.sort()
         self.update_list_widget_items(self.list_images, self.image_files)
-        self.list_results.clear()
+        self.update_list_widget_items(self.list_results, self.image_files)
 
     def load_txt_data(self):
         txt_file = None
@@ -2015,6 +2143,7 @@ class MOKEImageSubtractor(QWidget):
             self.txt_data = df.rename(
                 columns={df.columns[0]:"Field", df.columns[1]:"Intensity", df.columns[2]:"File"}
             ).reset_index(drop=True)
+            self.txt_data["File"] = self.txt_data["File"].str.strip()
             self.loop_field = self.txt_data["Field"].to_numpy(dtype=np.float32)
             self.loop_indices = np.arange(len(self.txt_data))
             self.loop_intens_txt = self.txt_data["Intensity"].to_numpy(dtype=np.float32)
@@ -2031,8 +2160,20 @@ class MOKEImageSubtractor(QWidget):
             
             # Update list widgets with the newly loaded field values
             self.update_list_widget_items(self.list_images, self.image_files)
-            if self.background_array is not None:
-                self.update_list_widget_items(self.list_results, self.image_files)
+            self.update_list_widget_items(self.list_results, self.image_files)
+            
+            # Re-sync select_bg and browse_images labels with current row/file details
+            idx_bg = self.list_images.currentRow()
+            if 0 <= idx_bg < len(self.image_files):
+                self.update_select_bg_label(self.image_files[idx_bg], is_set=(self.background_image is not None))
+            else:
+                self.update_select_bg_label(None, is_set=(self.background_image is not None))
+                
+            idx_browse = self.list_results.currentRow()
+            if 0 <= idx_browse < len(self.image_files):
+                self.update_browse_images_label(self.image_files[idx_browse])
+            else:
+                self.update_browse_images_label(None)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to read .txt data file.\n{e}")
             self.txt_data = None
@@ -2053,8 +2194,10 @@ class MOKEImageSubtractor(QWidget):
     def on_image_selected(self, idx):
         if idx < 0 or idx >= len(self.image_files):
             return
-        filepath = os.path.join(self.img_dir, self.image_files[idx])
+        filename = self.image_files[idx]
+        filepath = os.path.join(self.img_dir, filename)
         self.display_image(filepath)
+        self.update_select_bg_label(filename, is_set=False)
 
     def img_contrast_changed(self, val):
         contrast_val = val / 100.0
@@ -2071,6 +2214,61 @@ class MOKEImageSubtractor(QWidget):
         self.sld_img_contrast.blockSignals(False)
         self.show_current_subtracted_image_contrast_only()
 
+    def robust_normalize_raw(self, arr):
+        arr = arr.astype(np.float32)
+        mask = arr > 0
+        if np.any(mask):
+            active = arr[mask]
+            low = np.percentile(active, 1)
+            high = np.percentile(active, 99)
+            if high > low:
+                arr_disp = np.clip((arr - low) / (high - low) * 255.0, 0, 255).astype(np.uint8)
+                arr_disp[~mask] = 0
+                return arr_disp
+        min_val = arr.min()
+        max_val = arr.max()
+        ptp = max_val - min_val
+        if ptp > 0:
+            return ((arr - min_val) / ptp * 255.0).astype(np.uint8)
+        return np.zeros_like(arr, dtype=np.uint8)
+
+    def format_file_and_field(self, filename):
+        if not filename:
+            return ""
+        field_val = self.get_field_for_file(filename)
+        if field_val is not None:
+            return f"{filename}  {field_val:.2f} mT"
+        return filename
+
+    def update_select_bg_label(self, current_file=None, is_set=False):
+        if not hasattr(self, 'lbl_select_bg'):
+            return
+        if is_set:
+            if self.background_image:
+                info = self.format_file_and_field(self.background_image)
+                self.lbl_select_bg.setText(f"Select Background Image (SET: {info}):")
+            else:
+                self.lbl_select_bg.setText("Select Background Image:")
+        else:
+            if current_file:
+                info = self.format_file_and_field(current_file)
+                self.lbl_select_bg.setText(f"Select Background Image (Current: {info}):")
+            else:
+                if self.background_image:
+                    info = self.format_file_and_field(self.background_image)
+                    self.lbl_select_bg.setText(f"Select Background Image (SET: {info}):")
+                else:
+                    self.lbl_select_bg.setText("Select Background Image:")
+
+    def update_browse_images_label(self, current_file=None):
+        if not hasattr(self, 'lbl_browse_images'):
+            return
+        if current_file:
+            info = self.format_file_and_field(current_file)
+            self.lbl_browse_images.setText(f"Browse Images & View Subtraction (Current: {info}):")
+        else:
+            self.lbl_browse_images.setText("Browse Images & View Subtraction:")
+
     def display_image(self, filepath):
         img = Image.open(filepath)
         arr = np.array(img)
@@ -2085,7 +2283,10 @@ class MOKEImageSubtractor(QWidget):
                 h, w, c = arr.shape
                 qimg = QImage(data, w, h, QImage.Format_RGB888)
         else:
-            arr_disp = arr.astype(np.uint8) if arr.dtype != np.uint8 else arr
+            if arr.dtype != np.uint8:
+                arr_disp = self.robust_normalize_raw(arr)
+            else:
+                arr_disp = arr
             h, w = arr_disp.shape
             data = arr_disp.tobytes()
             qimg = QImage(data, w, h, QImage.Format_Grayscale8)
@@ -2102,15 +2303,62 @@ class MOKEImageSubtractor(QWidget):
         filepath = os.path.join(self.img_dir, bg_file)
         self.background_image = bg_file
         self.background_array = np.array(Image.open(filepath))
-        QMessageBox.information(self, "Background Set", f"Background set to: {bg_file}")
+        #QMessageBox.information(self, "Background Set", f"Background set to: {bg_file}")
+        
+        self.update_select_bg_label(bg_file, is_set=True)
         self.update_list_widget_items(self.list_results, self.image_files)
         self.btn_save.setEnabled(True)
+        
+        # If there is a current selection in list_results, refresh it!
+        res_idx = self.list_results.currentRow()
+        if res_idx >= 0:
+            self.show_subtracted_image(res_idx)
 
     def show_subtracted_image(self, idx):
-        if self.background_array is None or idx < 0 or idx >= len(self.image_files):
+        if idx < 0 or idx >= len(self.image_files):
             return
         img_file = self.image_files[idx]
         img_path = os.path.join(self.img_dir, img_file)
+        self.update_browse_images_label(img_file)
+        
+        # If no background is set, or if the selected image is the background itself,
+        # display the original image instead of a flat/zero difference or static.
+        if self.background_array is None or img_file == self.background_image:
+            try:
+                img_arr = np.array(Image.open(img_path))
+                img_arr = crop600(img_arr)
+                if img_arr.ndim == 3 and img_arr.shape[2] in [3, 4]:
+                    if img_arr.shape[2] == 4:
+                        data = img_arr.tobytes()
+                        h, w, c = img_arr.shape
+                        qimg = QImage(data, w, h, QImage.Format_RGBA8888)
+                    else:
+                        data = img_arr.tobytes()
+                        h, w, c = img_arr.shape
+                        qimg = QImage(data, w, h, QImage.Format_RGB888)
+                else:
+                    arr_disp = self.robust_normalize_raw(img_arr)
+                    h, w = arr_disp.shape
+                    data = arr_disp.tobytes()
+                    qimg = QImage(data, w, h, QImage.Format_Grayscale8)
+                pix = QPixmap.fromImage(qimg)
+                self.lbl_img.setPixmap(pix)
+                self.update_roi_spinbox_ranges(pix.width(), pix.height())
+                
+                # Update current image variables but clear subtraction arrays
+                self.current_difference_arr_raw = None
+                self.current_difference_arr = None
+                self.current_difference_img = Image.fromarray(arr_disp) if (img_arr.ndim != 3 or img_arr.shape[2] not in [3, 4]) else Image.fromarray(img_arr)
+                self.current_image_idx = idx
+                self.current_image_file = img_file
+                self.btn_save.setEnabled(False)  # Save is disabled for raw image preview
+            except Exception as e:
+                self.lbl_img.setText(f"Error: {e}")
+                self.current_difference_img = None
+                self.current_difference_arr = None
+                self.current_difference_arr_raw = None
+            return
+
         try:
             img_arr = np.array(Image.open(img_path))
             bg_arr = self.background_array.copy()
@@ -2168,21 +2416,40 @@ class MOKEImageSubtractor(QWidget):
             
             self.show_current_subtracted_image_contrast_only()
             self.current_result_filename = f"{os.path.splitext(img_file)[0]}_contrast.png"
+            self.btn_save.setEnabled(True)  # Enable save for subtracted image
         except Exception as e:
             self.lbl_img.setText(f"Error: {e}")
             self.current_difference_img = None
             self.current_difference_arr = None
             self.current_difference_arr_raw = None
 
+    def apply_colormap_to_arr(self, arr_disp):
+        colormap_name = self.cmb_colormap.currentText()
+        if colormap_name == "gray":
+            h, w = arr_disp.shape
+            data = arr_disp.tobytes()
+            qimg = QImage(data, w, h, QImage.Format_Grayscale8)
+            show_img = Image.fromarray(arr_disp)
+            return qimg, show_img
+        else:
+            normalized = arr_disp.astype(np.float32) / 255.0
+            try:
+                cmap = plt.get_cmap(colormap_name)
+            except AttributeError:
+                cmap = plt.cm.get_cmap(colormap_name)
+            rgba_arr = (cmap(normalized) * 255).astype(np.uint8)
+            h, w, c = rgba_arr.shape
+            data = rgba_arr.tobytes()
+            qimg = QImage(data, w, h, w * 4, QImage.Format_RGBA8888)
+            show_img = Image.fromarray(rgba_arr)
+            return qimg, show_img
+
     def show_current_subtracted_image_contrast_only(self):
         if not hasattr(self, 'current_difference_arr_raw') or self.current_difference_arr_raw is None:
             if self.current_difference_arr is None:
                 return
             arr_disp = normalized_for_display(self.current_difference_arr, contrast=self.loop_panel.contrast)
-            show_img = Image.fromarray(arr_disp)
-            h, w = arr_disp.shape
-            data = arr_disp.tobytes()
-            qimg = QImage(data, w, h, QImage.Format_Grayscale8)
+            qimg, show_img = self.apply_colormap_to_arr(arr_disp)
             pix = QPixmap.fromImage(qimg)
             self.lbl_img.setPixmap(pix)
             self.update_roi_spinbox_ranges(pix.width(), pix.height())
@@ -2206,10 +2473,7 @@ class MOKEImageSubtractor(QWidget):
         
         # Display with contrast stretch
         arr_disp = normalized_for_display(self.current_difference_arr, contrast=self.loop_panel.contrast)
-        show_img = Image.fromarray(arr_disp)
-        h, w = arr_disp.shape
-        data = arr_disp.tobytes()
-        qimg = QImage(data, w, h, QImage.Format_Grayscale8)
+        qimg, show_img = self.apply_colormap_to_arr(arr_disp)
         pix = QPixmap.fromImage(qimg)
         self.lbl_img.setPixmap(pix)
         self.update_roi_spinbox_ranges(pix.width(), pix.height())
@@ -2220,17 +2484,21 @@ class MOKEImageSubtractor(QWidget):
             save_path, _ = QFileDialog.getSaveFileName(
                 self, "Save Contrast Image", self.current_result_filename, "PNG Files (*.png)")
             if save_path:
-                arr = self.current_difference_arr
-                if arr is None:
-                    arr = np.array(self.current_difference_img)
-                if arr.min() < 0 or arr.max() >= 256:
-                    arr16 = arr - arr.min()
-                    arr16 = arr16 / arr16.max() * 65535
-                    arr16 = arr16.astype(np.uint16)
-                    Image.fromarray(arr16).save(save_path)
+                colormap_name = self.cmb_colormap.currentText()
+                if colormap_name == "gray":
+                    arr = self.current_difference_arr
+                    if arr is None:
+                        arr = np.array(self.current_difference_img)
+                    if arr.min() < 0 or arr.max() >= 256:
+                        arr16 = arr - arr.min()
+                        arr16 = arr16 / arr16.max() * 65535
+                        arr16 = arr16.astype(np.uint16)
+                        Image.fromarray(arr16).save(save_path)
+                    else:
+                        arr8 = np.clip(arr, 0, 255).astype(np.uint8)
+                        Image.fromarray(arr8).save(save_path)
                 else:
-                    arr8 = np.clip(arr, 0, 255).astype(np.uint8)
-                    Image.fromarray(arr8).save(save_path)
+                    self.current_difference_img.save(save_path)
                 QMessageBox.information(self, "Saved", f"Contrast image saved to:\n{save_path}")
         else:
             QMessageBox.warning(self, "Nothing to save", "No subtracted image to save.")
@@ -2325,7 +2593,12 @@ class MOKEImageSubtractor(QWidget):
             QApplication.restoreOverrideCursor()
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Kerr MOKE Looper Analysis Tool")
+    parser.add_argument("--theme", type=str, default="dark", choices=["dark", "light"], help="Theme to apply")
+    args, unknown = parser.parse_known_args()
+
     app = QApplication(sys.argv)
-    window = MOKEImageSubtractor()
+    window = MOKEImageSubtractor(theme=args.theme)
     window.show()
     sys.exit(app.exec_())
