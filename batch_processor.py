@@ -992,8 +992,8 @@ def main():
         "--headless", action="store_true",
         help="Run in headless CLI mode without starting PyQt5 GUI.")
     parser.add_argument(
-        "--theme", type=str, default="dark", choices=["dark", "light"],
-        help="Theme to apply (dark or light). Only effective in GUI mode.")
+        "--theme", type=str, default="dark", choices=["dark", "charcoal", "light"],
+        help="Theme to apply (dark, charcoal, or light). Only effective in GUI mode.")
     args = parser.parse_args()
 
     parent_dir = args.parent_dir

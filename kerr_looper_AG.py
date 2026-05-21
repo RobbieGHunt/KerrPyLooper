@@ -40,14 +40,11 @@ class StyledSplitterHandle(QSplitterHandle):
                 break
             p = p.parent()
             
-        if theme == "dark":
-            bg_color = QColor("#1e293b")  # Slate 800
-            border_color = QColor("#334155")  # Slate 700
-            grip_color = QColor("#6366f1")  # Indigo
-        else:
-            bg_color = QColor("#cbd5e1")  # Slate 300
-            border_color = QColor("#cbd5e1")  # Slate 300
-            grip_color = QColor("#4f46e5")  # Indigo
+        from gui_styles import get_theme_colors
+        colors = get_theme_colors(theme)
+        bg_color = QColor(colors["card"])
+        border_color = QColor(colors["border"])
+        grip_color = QColor(colors["accent"])
             
         # Fill background
         painter.fillRect(self.rect(), bg_color)
@@ -594,8 +591,10 @@ class LoopCorrectionPanel(QWidget):
         theme = "dark"
         if self.parent_widget and hasattr(self.parent_widget, 'theme'):
             theme = self.parent_widget.theme
-        fig_bg = "#1e293b" if theme == "dark" else "#ffffff"
-        ax_bg = "#0f172a" if theme == "dark" else "#f8fafc"
+        from gui_styles import get_theme_colors
+        colors = get_theme_colors(theme)
+        fig_bg = colors["card"]
+        ax_bg = colors["bg"]
         
         self.figure = Figure(figsize=(4, 6), facecolor=fig_bg)
         self.ax = self.figure.add_subplot(111)
@@ -1261,18 +1260,13 @@ class LoopCorrectionPanel(QWidget):
         if self.parent_widget and hasattr(self.parent_widget, 'theme'):
             theme = self.parent_widget.theme
             
-        if theme == "dark":
-            fig_bg = "#1e293b" # Slate 800
-            ax_bg = "#0f172a"  # Slate 900
-            text_color = "#f8fafc" # Slate 50
-            grid_color = "#334155" # Slate 700
-            spine_color = "#475569" # Slate 600
-        else:
-            fig_bg = "#ffffff"
-            ax_bg = "#f8fafc"
-            text_color = "#0f172a"
-            grid_color = "#e2e8f0"
-            spine_color = "#cbd5e1"
+        from gui_styles import get_theme_colors
+        colors = get_theme_colors(theme)
+        fig_bg = colors["card"]
+        ax_bg = colors["bg"]
+        text_color = colors["text"]
+        grid_color = colors["border"]
+        spine_color = colors["spine"]
             
         self.figure.patch.set_facecolor(fig_bg)
         self.ax.set_facecolor(ax_bg)
@@ -2595,7 +2589,7 @@ class MOKEImageSubtractor(QWidget):
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Kerr MOKE Looper Analysis Tool")
-    parser.add_argument("--theme", type=str, default="dark", choices=["dark", "light"], help="Theme to apply")
+    parser.add_argument("--theme", type=str, default="dark", choices=["dark", "charcoal", "light"], help="Theme to apply")
     args, unknown = parser.parse_known_args()
 
     app = QApplication(sys.argv)

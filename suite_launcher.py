@@ -22,7 +22,7 @@ import math
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFrame, QSplitter, QTextEdit, QMessageBox,
-    QFileDialog, QProgressBar, QGraphicsDropShadowEffect
+    QFileDialog, QProgressBar, QGraphicsDropShadowEffect, QComboBox
 )
 from PyQt5.QtGui import QFont, QColor, QTextCursor, QPainter, QPainterPath, QPen
 from PyQt5.QtCore import Qt, QProcess, QProcessEnvironment
@@ -72,12 +72,10 @@ class HysteresisLoopWidget(QWidget):
         painter.setRenderHint(QPainter.Antialiasing)
         
         # Determine colors based on theme
-        if self.theme == "dark":
-            line_color = QColor("#6366f1")  # Indigo accent
-            grid_color = QColor("#334155")  # Slate 700
-        else:
-            line_color = QColor("#4f46e5")  # Indigo accent
-            grid_color = QColor("#cbd5e1")  # Slate 300
+        from gui_styles import get_theme_colors
+        colors = get_theme_colors(self.theme)
+        line_color = QColor(colors["accent"])
+        grid_color = QColor(colors["border"])
             
         w, h = self.width(), self.height()
         margin = 10
@@ -236,12 +234,15 @@ class SuiteLauncherWindow(QMainWindow):
         header_layout.addLayout(title_layout)
         header_layout.addStretch()
         
-        # Theme toggle button
-        self.btn_theme_toggle = QPushButton("☀️ Light Mode")
-        self.btn_theme_toggle.setObjectName("ThemeToggleButton")
-        self.btn_theme_toggle.setCursor(Qt.PointingHandCursor)
-        self.btn_theme_toggle.clicked.connect(self.toggle_theme)
-        header_layout.addWidget(self.btn_theme_toggle, alignment=Qt.AlignVCenter)
+        # Theme selector dropdown
+        self.theme_selector = QComboBox()
+        self.theme_selector.setObjectName("ThemeSelector")
+        self.theme_selector.addItem("🌙 Slate Dark", "dark")
+        self.theme_selector.addItem("🌑 Charcoal Dark", "charcoal")
+        self.theme_selector.addItem("☀️ Slate Light", "light")
+        self.theme_selector.setMinimumWidth(150)
+        self.theme_selector.currentIndexChanged.connect(self.on_theme_changed)
+        header_layout.addWidget(self.theme_selector, alignment=Qt.AlignVCenter)
         
         main_layout.addWidget(header_widget)
         
@@ -322,14 +323,9 @@ class SuiteLauncherWindow(QMainWindow):
         # Apply initial theme stylesheet
         apply_theme(self, self.current_theme)
         
-    def toggle_theme(self):
-        if self.current_theme == "dark":
-            self.current_theme = "light"
-            self.btn_theme_toggle.setText("🌙 Dark Mode")
-        else:
-            self.current_theme = "dark"
-            self.btn_theme_toggle.setText("☀️ Light Mode")
-            
+    def on_theme_changed(self, index):
+        theme_name = self.theme_selector.itemData(index)
+        self.current_theme = theme_name
         apply_theme(self, self.current_theme)
         for card in self.cards:
             card.set_theme(self.current_theme)
