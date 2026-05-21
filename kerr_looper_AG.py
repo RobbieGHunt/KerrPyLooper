@@ -2516,6 +2516,10 @@ class MOKEImageSubtractor(QWidget):
         roi_data = self.lbl_img.roi_data
         enable_roi = (roi_shape != "None" and roi_data is not None)
         
+        # ⚡ Bolt: Pre-crop and pre-cast the background array to float32
+        # This avoids doing these expensive operations for every single image
+        bg_base = crop600(self.background_array)
+
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             for idx, row in self.txt_data.iterrows():
@@ -2526,12 +2530,18 @@ class MOKEImageSubtractor(QWidget):
                     continue
                 try:
                     img_arr = np.array(Image.open(img_path))
-                    bg_arr = self.background_array.copy()
                     
-                    # Crop target and background first to prevent metadata ringing & optimize speed
+                    # Crop target first to prevent metadata ringing & optimize speed
                     img_arr = crop600(img_arr)
-                    bg_arr = crop600(bg_arr)
                     
+                    # If z-drift correction is enabled and we are blurring the reference,
+                    # we must copy the background for this specific iteration.
+                    # Otherwise, we can just use the pre-cropped array.
+                    if enable_z and method_idx == 0:
+                        bg_arr = bg_base.copy()
+                    else:
+                        bg_arr = bg_base
+
                     if enable_z:
                         field = row['Field']
                         sigma = coeff * (field ** 2)
@@ -2564,7 +2574,10 @@ class MOKEImageSubtractor(QWidget):
                         img_c = img_arr[:min_shape[0], :min_shape[1]]
                         bg_c = bg_arr[:min_shape[0], :min_shape[1]]
                     arr = img_c.astype(np.float32) - bg_c.astype(np.float32)
-                    arr_cropped = crop600(arr)
+
+                    # Since both img_arr and bg_arr were already cropped using crop600,
+                    # arr is already cropped. No need to crop again.
+                    arr_cropped = arr
                     
                     # Store raw subtraction (do not bake the correction in)
                     if enable_roi:

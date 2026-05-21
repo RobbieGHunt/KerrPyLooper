@@ -1,0 +1,3 @@
+## 2024-05-21 - Image Pre-processing Optimization
+**Learning:** In Kerr MOKE image processing scripts (`batch_processor.py`, `kerr_looper_AG.py`), the background reference image is used as the subtrahend against every image in the sweep. The codebase originally cropped and cast the background image inside the inner subtraction loop, causing redundant O(N) memory allocations and array operations.
+**Action:** Always hoist invariant image cropping (`crop600`) and casting operations outside of iterative loops. Be careful when background images are mutated per-iteration (e.g., dynamic Z-drift blurring), in which case `.copy()` on the pre-cropped reference should be conditionally applied.
