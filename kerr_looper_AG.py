@@ -1938,9 +1938,6 @@ class MOKEImageSubtractor(QWidget):
         if d:
             self.img_dir = d
             self.clear_roi()
-            self.update_image_list()
-            self.list_results.clear()
-            self.lbl_img.setText("Preview will appear here")
             self.background_image = None
             self.background_array = None
             self.txt_data = None
@@ -1951,7 +1948,33 @@ class MOKEImageSubtractor(QWidget):
             self.loop_intens_subtracted = None
             self.mean_index = None
             self.mean_field = None
+            self.lbl_img.setText("Preview will appear here")
+            self.update_image_list()
+            self.list_results.clear()
             self.load_txt_data()
+
+    def get_field_for_file(self, filename):
+        if self.txt_data is not None:
+            match = self.txt_data[self.txt_data['File'] == filename]
+            if not match.empty:
+                return float(match.iloc[0]['Field'])
+        return None
+
+    def update_list_widget_items(self, list_widget, files):
+        list_widget.blockSignals(True)
+        curr_row = list_widget.currentRow()
+        list_widget.clear()
+        display_items = []
+        for f in files:
+            field_val = self.get_field_for_file(f)
+            if field_val is not None:
+                display_items.append(f"{f}  ({field_val:.2f} mT)")
+            else:
+                display_items.append(f)
+        list_widget.addItems(display_items)
+        if 0 <= curr_row < len(files):
+            list_widget.setCurrentRow(curr_row)
+        list_widget.blockSignals(False)
 
     def update_image_list(self):
         self.image_files = [
@@ -1959,8 +1982,7 @@ class MOKEImageSubtractor(QWidget):
             if f.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"))
         ]
         self.image_files.sort()
-        self.list_images.clear()
-        self.list_images.addItems(self.image_files)
+        self.update_list_widget_items(self.list_images, self.image_files)
         self.list_results.clear()
 
     def load_txt_data(self):
@@ -2006,6 +2028,11 @@ class MOKEImageSubtractor(QWidget):
             
             self.btn_make_loop.setEnabled(True)
             self.request_loop_update()
+            
+            # Update list widgets with the newly loaded field values
+            self.update_list_widget_items(self.list_images, self.image_files)
+            if self.background_array is not None:
+                self.update_list_widget_items(self.list_results, self.image_files)
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to read .txt data file.\n{e}")
             self.txt_data = None
@@ -2076,8 +2103,7 @@ class MOKEImageSubtractor(QWidget):
         self.background_image = bg_file
         self.background_array = np.array(Image.open(filepath))
         QMessageBox.information(self, "Background Set", f"Background set to: {bg_file}")
-        self.list_results.clear()
-        self.list_results.addItems(self.image_files)
+        self.update_list_widget_items(self.list_results, self.image_files)
         self.btn_save.setEnabled(True)
 
     def show_subtracted_image(self, idx):
