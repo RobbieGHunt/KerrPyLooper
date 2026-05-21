@@ -48,20 +48,24 @@ def find_defect_roi(img, patch_size=128):
     """
     grad = get_gradient_magnitude(img)
     h, w = img.shape[0], img.shape[1]
-    best_score = -1
-    best_coords = (150, 150)  # default fallback center area
-    
     step = 10
     margin = 20
-    for r in range(margin, h - patch_size - margin, step):
-        for c in range(margin, w - patch_size - margin, step):
-            patch_grad = grad[r:r+patch_size, c:c+patch_size]
-            score = np.sum(patch_grad)
-            if score > best_score:
-                best_score = score
-                best_coords = (r, c)
-                
-    return best_coords
+
+    r_range = np.arange(margin, h - patch_size - margin, step)
+    c_range = np.arange(margin, w - patch_size - margin, step)
+
+    if len(r_range) == 0 or len(c_range) == 0:
+        return (150, 150)
+
+    window_sums = ndimage.uniform_filter(grad, size=patch_size, mode='constant') * (patch_size**2)
+
+    r_idx = r_range + patch_size // 2
+    c_idx = c_range + patch_size // 2
+
+    scores_subgrid = window_sums[np.ix_(r_idx, c_idx)]
+    max_idx = np.unravel_index(np.argmax(scores_subgrid), scores_subgrid.shape)
+
+    return (int(r_range[max_idx[0]]), int(c_range[max_idx[1]]))
 
 def estimate_defocus(ref_img_norm, target_img_norm):
     """
