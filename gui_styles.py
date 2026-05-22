@@ -386,6 +386,37 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
     border: none;
     background: none;
 }}
+
+/* TABS */
+QTabWidget::pane {{
+    border: 1px solid {border};
+    border-radius: 6px;
+    background-color: {bg};
+    top: -1px;
+}}
+
+QTabBar::tab {{
+    background-color: {btn_bg};
+    color: {text_muted};
+    border: 1px solid {border};
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 6px 16px;
+    margin-right: 2px;
+}}
+
+QTabBar::tab:selected {{
+    background-color: {bg};
+    color: {text};
+    border: 1px solid {border};
+    border-bottom: 1px solid {bg};
+}}
+
+QTabBar::tab:hover:!selected {{
+    background-color: {btn_hover};
+    color: {text};
+}}
 """
 
 def get_theme_colors(theme_name="dark"):

@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
     QFileDialog, QProgressBar, QGraphicsDropShadowEffect, QComboBox
 )
 from PyQt5.QtGui import QFont, QColor, QTextCursor, QPainter, QPainterPath, QPen, QBrush, QConicalGradient, QRadialGradient
-from PyQt5.QtCore import Qt, QProcess, QProcessEnvironment
+from PyQt5.QtCore import Qt, QProcess, QProcessEnvironment, QRectF, QPointF
 
 from gui_styles import apply_theme
 
@@ -58,6 +58,15 @@ TOOL_REGISTRY = [
         "description": "Generate 2D magnetization vector maps from X/Y MOKE image sweeps. Select cropping bounds, apply wavelet denoising, overlay quiver arrows with scale bars, and export vector map plots and loop curves.",
         "script": "vector_analysis.py",
         "icon": "🧭",
+        "prompt_directory": False,
+    },
+    {
+        "id": "drift_corrector",
+        "name": "Drift Corrector",
+        "subtitle": "In-Plane X/Y Drift Alignment",
+        "description": "Correct field-induced in-plane (X/Y) image drift in Kerr hysteresis image series. Select a static defect ROI, set a search width, and apply sub-pixel NCC alignment to produce a drift-corrected image series and diagnostic drift curves.",
+        "script": "drift_corrector.py",
+        "icon": "⚓",
         "prompt_directory": False,
     }
 ]
@@ -239,6 +248,144 @@ class VortexWidget(QWidget):
         
         painter.end()
 
+# ==============================================================================================================
+# CUSTOM DRIFT ALIGNMENT WIDGET (ICON)
+# ==============================================================================
+class DriftAlignmentWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(80, 80)
+        self.setMaximumSize(120, 120)
+        self.theme = "charcoal"
+        
+    def set_theme(self, theme):
+        self.theme = theme
+        self.update()
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Determine colors based on theme
+        from gui_styles import get_theme_colors
+        colors = get_theme_colors(self.theme)
+        accent_color = QColor(colors["accent"])
+        border_color = QColor(colors["border"])
+        text_muted = QColor(colors["text_muted"])
+        
+        w, h = self.width(), self.height()
+        margin = 10
+        cx, cy = w / 2.0, h / 2.0
+        r_max = min(w, h) / 2.0 - margin
+        
+        # 1. Outer circular dial base
+        painter.setBrush(QBrush(QColor(colors["bg"])))
+        painter.setPen(QPen(border_color, 1.5, Qt.SolidLine))
+        painter.drawEllipse(int(cx - r_max), int(cy - r_max), int(2 * r_max), int(2 * r_max))
+        
+        # 2. Draw fine grid dots representing sensor pixels
+        grid_pen = QPen(QColor(border_color.red(), border_color.green(), border_color.blue(), 80), 1)
+        painter.setPen(grid_pen)
+        grid_step = 8
+        for x in range(int(cx - r_max * 0.7), int(cx + r_max * 0.7), grid_step):
+            for y in range(int(cy - r_max * 0.7), int(cy + r_max * 0.7), grid_step):
+                # Only draw within the circle bounds
+                dx = x - cx
+                dy = y - cy
+                if dx*dx + dy*dy < (r_max * 0.75) * (r_max * 0.75):
+                    painter.drawPoint(x, y)
+                    
+        # 3. Reference frame (centered, stable, solid accent color with soft translucent fill)
+        frame_w = r_max * 1.15
+        frame_h = r_max * 0.85
+        ref_rect = QRectF(cx - frame_w/2, cy - frame_h/2, frame_w, frame_h)
+        painter.setBrush(QBrush(QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 20)))
+        painter.setPen(QPen(accent_color, 1.8, Qt.SolidLine))
+        painter.drawRoundedRect(ref_rect, 4.0, 4.0)
+        
+        # 4. Drifted frame (shifted, dotted, pinkish color)
+        shift_x = 8
+        shift_y = -6
+        drift_rect = QRectF(cx - frame_w/2 + shift_x, cy - frame_h/2 + shift_y, frame_w, frame_h)
+        painter.setBrush(Qt.NoBrush)
+        drift_pen = QPen(QColor("#f472b6"), 1.2, Qt.DashLine)
+        painter.setPen(drift_pen)
+        painter.drawRoundedRect(drift_rect, 4.0, 4.0)
+        
+        # 5. Anchor symbol in the center of the reference frame
+        pen_anchor = QPen(accent_color, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen_anchor)
+        painter.setBrush(Qt.NoBrush)
+        
+        # Ring at the top
+        ring_r = 3.5
+        ring_y = cy - frame_h * 0.2
+        painter.drawEllipse(QRectF(cx - ring_r, ring_y - ring_r, 2 * ring_r, 2 * ring_r))
+        
+        # Vertical shank
+        shank_top = ring_y + ring_r
+        shank_bottom = cy + frame_h * 0.22
+        painter.drawLine(QPointF(cx, shank_top), QPointF(cx, shank_bottom))
+        
+        # Crossbar (stock)
+        stock_y = ring_y + ring_r + 3.0
+        stock_w = 10.0
+        painter.drawLine(QPointF(cx - stock_w/2, stock_y), QPointF(cx + stock_w/2, stock_y))
+        
+        # Curved fluke at the bottom
+        fluke_r = 8.5
+        fluke_rect = QRectF(cx - fluke_r, shank_bottom - fluke_r, 2 * fluke_r, 2 * fluke_r)
+        painter.drawArc(fluke_rect, 180 * 16, 180 * 16)
+        
+        # Fluke tips (arrows pointing upward slightly)
+        painter.drawLine(QPointF(cx - fluke_r, shank_bottom), QPointF(cx - fluke_r + 1.5, shank_bottom - 2.5))
+        painter.drawLine(QPointF(cx + fluke_r, shank_bottom), QPointF(cx + fluke_r - 1.5, shank_bottom - 2.5))
+        
+        # 6. Correction vector arrow (from center of drifted frame to center of ref frame)
+        dcx = cx + shift_x
+        dcy = cy + shift_y
+        
+        pen_vector = QPen(QColor("#f472b6"), 1.4, Qt.SolidLine)
+        painter.setPen(pen_vector)
+        painter.drawLine(QPointF(dcx, dcy), QPointF(cx, cy))
+        
+        # Arrowhead pointing to reference center (cx, cy)
+        vx = -shift_x
+        vy = -shift_y
+        length = math.sqrt(vx*vx + vy*vy)
+        if length > 0.1:
+            ux, uy = vx / length, vy / length
+            al = 5.0
+            angle = math.radians(25)
+            # Right wing
+            rx = ux * math.cos(angle) - uy * math.sin(angle)
+            ry = ux * math.sin(angle) + uy * math.cos(angle)
+            painter.drawLine(QPointF(cx, cy), QPointF(cx - al * rx, cy - al * ry))
+            # Left wing
+            lx = ux * math.cos(-angle) - uy * math.sin(-angle)
+            ly = ux * math.sin(-angle) + uy * math.cos(-angle)
+            painter.drawLine(QPointF(cx, cy), QPointF(cx - al * lx, cy - al * ly))
+            
+        # 7. Corner brackets (Autofocus style) around the reference frame corners
+        pen_brackets = QPen(accent_color, 1.5, Qt.SolidLine)
+        painter.setPen(pen_brackets)
+        bs = 5.0 # bracket size
+        
+        # Top-Left Bracket
+        painter.drawLine(QPointF(cx - frame_w/2 - 2, cy - frame_h/2 - 2), QPointF(cx - frame_w/2 - 2 + bs, cy - frame_h/2 - 2))
+        painter.drawLine(QPointF(cx - frame_w/2 - 2, cy - frame_h/2 - 2), QPointF(cx - frame_w/2 - 2, cy - frame_h/2 - 2 + bs))
+        # Top-Right Bracket
+        painter.drawLine(QPointF(cx + frame_w/2 + 2, cy - frame_h/2 - 2), QPointF(cx + frame_w/2 + 2 - bs, cy - frame_h/2 - 2))
+        painter.drawLine(QPointF(cx + frame_w/2 + 2, cy - frame_h/2 - 2), QPointF(cx + frame_w/2 + 2, cy - frame_h/2 - 2 + bs))
+        # Bottom-Left Bracket
+        painter.drawLine(QPointF(cx - frame_w/2 - 2, cy + frame_h/2 + 2), QPointF(cx - frame_w/2 - 2 + bs, cy + frame_h/2 + 2))
+        painter.drawLine(QPointF(cx - frame_w/2 - 2, cy + frame_h/2 + 2), QPointF(cx - frame_w/2 - 2, cy + frame_h/2 + 2 - bs))
+        # Bottom-Right Bracket
+        painter.drawLine(QPointF(cx + frame_w/2 + 2, cy + frame_h/2 + 2), QPointF(cx + frame_w/2 + 2 - bs, cy + frame_h/2 + 2))
+        painter.drawLine(QPointF(cx + frame_w/2 + 2, cy + frame_h/2 + 2), QPointF(cx + frame_w/2 + 2, cy + frame_h/2 + 2 - bs))
+        
+        painter.end()
+
 
 # ==============================================================================
 # TOOL CARD COMPONENT
@@ -250,6 +397,7 @@ class ToolCardWidget(QFrame):
         self.config = tool_config
         self.loop_widget = None
         self.vortex_widget = None
+        self.drift_widget = None
         
         # Setup vertical layout
         layout = QVBoxLayout(self)
@@ -269,6 +417,13 @@ class ToolCardWidget(QFrame):
             icon_layout = QHBoxLayout()
             icon_layout.addStretch()
             icon_layout.addWidget(self.vortex_widget)
+            icon_layout.addStretch()
+            layout.addLayout(icon_layout)
+        elif tool_config["id"] == "drift_corrector":
+            self.drift_widget = DriftAlignmentWidget(self)
+            icon_layout = QHBoxLayout()
+            icon_layout.addStretch()
+            icon_layout.addWidget(self.drift_widget)
             icon_layout.addStretch()
             layout.addLayout(icon_layout)
         else:
@@ -313,12 +468,14 @@ class ToolCardWidget(QFrame):
         shadow.setYOffset(4)
         shadow.setColor(QColor(0, 0, 0, 100))
         self.setGraphicsEffect(shadow)
-
+ 
     def set_theme(self, theme):
         if self.loop_widget:
             self.loop_widget.set_theme(theme)
         if self.vortex_widget:
             self.vortex_widget.set_theme(theme)
+        if self.drift_widget:
+            self.drift_widget.set_theme(theme)
 
 
 # ==============================================================================
@@ -335,6 +492,7 @@ class SuiteLauncherWindow(QMainWindow):
         self.active_looper_window = None
         self.active_batch_window = None
         self.active_vector_window = None
+        self.active_drift_window = None
         self.init_ui()
         
     def init_ui(self):
@@ -468,6 +626,8 @@ class SuiteLauncherWindow(QMainWindow):
             self.active_batch_window.change_theme(self.current_theme)
         if self.active_vector_window is not None:
             self.active_vector_window.change_theme(self.current_theme)
+        if self.active_drift_window is not None:
+            self.active_drift_window.change_theme(self.current_theme)
             
     def log(self, text):
         """Append text to the console output text widget."""
@@ -576,6 +736,36 @@ class SuiteLauncherWindow(QMainWindow):
                     import traceback
                     self.log(traceback.format_exc())
                     QMessageBox.critical(self, "Error", f"Failed to launch Vector Maps:\n{e}")
+            return
+        elif tool_config["id"] == "drift_corrector":
+            if self.active_drift_window is not None:
+                self.active_drift_window.show()
+                self.active_drift_window.raise_()
+                self.active_drift_window.activateWindow()
+                self.log("[Info] Brought active Drift Corrector window to focus.")
+            else:
+                self.log("[Info] Launching Drift Corrector in same process...")
+                try:
+                    from drift_corrector import DriftCorrectorWindow
+                    window = DriftCorrectorWindow(theme=self.current_theme)
+
+                    # Intercept closeEvent to clear reference
+                    orig_close = window.closeEvent
+                    def custom_close(event):
+                        orig_close(event)
+                        if event.isAccepted():
+                            self.active_drift_window = None
+                            self.log("[Info] Drift Corrector window closed.")
+                    window.closeEvent = custom_close
+
+                    self.active_drift_window = window
+                    window.show()
+                    self.log("[Info] Drift Corrector launched successfully.")
+                except Exception as e:
+                    self.log(f"[Error] Failed to launch Drift Corrector: {e}")
+                    import traceback
+                    self.log(traceback.format_exc())
+                    QMessageBox.critical(self, "Error", f"Failed to launch Drift Corrector:\n{e}")
             return
 
         if self.current_process is not None:
@@ -706,6 +896,8 @@ class SuiteLauncherWindow(QMainWindow):
                     self.active_batch_window.close()
                 if self.active_vector_window is not None:
                     self.active_vector_window.close()
+                if self.active_drift_window is not None:
+                    self.active_drift_window.close()
                 event.accept()
             else:
                 event.ignore()
@@ -716,6 +908,8 @@ class SuiteLauncherWindow(QMainWindow):
                 self.active_batch_window.close()
             if self.active_vector_window is not None:
                 self.active_vector_window.close()
+            if self.active_drift_window is not None:
+                self.active_drift_window.close()
             event.accept()
 
 
