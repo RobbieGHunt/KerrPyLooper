@@ -118,8 +118,8 @@ def run_subtraction_loop(data_dir: str, txt_df: "pd.DataFrame",
     the mean intensity of the difference as a 1-D float32 array.
     """
     means = []
-    for _, row in txt_df.iterrows():
-        img_file = row["File"].strip()
+    for row in txt_df.itertuples(index=False):
+        img_file = row.File.strip()
         img_path = os.path.join(data_dir, img_file)
         if not os.path.exists(img_path):
             means.append(np.nan)
@@ -234,9 +234,9 @@ def apply_correction(field: np.ndarray, intensity: np.ndarray,
                 + coeffs["linear"] * (field - np.mean(field))
                 + coeffs["quad"]   * ((field - np.mean(field) - qo) ** 2))
     if normalize:
-        ptp = arr_corr.ptp()
+        ptp = np.ptp(arr_corr)
         if ptp > 0:
-            arr_corr = (arr_corr - arr_corr.min()) / ptp * 2 - 1
+            arr_corr = (arr_corr - np.min(arr_corr)) / ptp * 2 - 1
         else:
             arr_corr[:] = 0.0
     return arr_corr
