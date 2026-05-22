@@ -12,10 +12,14 @@ example1_corrected/
 example2_batch/
 scratch/
 defect_patch_*.png
+test_run.log
 
 # Intermediate/Old Python scripts (minimal repo)
 kerr_looper_v2.py
 kerr_looper.py
-
 example1/data/
 example1/Analysis/
+zero_vector.py
+
+# Local logs
+importtime.log

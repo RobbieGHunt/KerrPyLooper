@@ -27,12 +27,12 @@ import os
 import re
 import argparse
 import datetime
+import time
+import threading
 
 import numpy as np
 from PIL import Image
 import matplotlib
-matplotlib.use("Agg")          # headless – no display needed
-import matplotlib.pyplot as plt
 
 # Add script directory to sys.path to ensure gui_styles import works
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -40,7 +40,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
     from PyQt5.QtWidgets import (
         QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-        QLabel, QLineEdit, QCheckBox, QFileDialog, QTextEdit, QGroupBox
+        QLabel, QLineEdit, QCheckBox, QFileDialog, QTextEdit, QGroupBox,
+        QComboBox, QSpinBox
     )
     from PyQt5.QtCore import Qt, QThread, pyqtSignal
     from PyQt5.QtGui import QTextCursor
@@ -62,41 +63,63 @@ def crop600(arr: np.ndarray) -> np.ndarray:
     return arr[:600, :]
 
 
-def load_txt_data(data_dir: str):
+def load_txt_data(data_dir: str, print_func=print):
     """
-    Find the first .txt file in *data_dir* and return a DataFrame with columns
-    Field, Intensity, File.  Returns None if no valid file is found.
+    Find a valid .txt data file in *data_dir* and return a DataFrame with columns
+    Field, Intensity, File. Returns None if no valid file is found.
+    If multiple .txt files exist, attempts to identify the correct one
+    by checking for structured data.
     """
-    txt_file = None
-    for fn in os.listdir(data_dir):
-        if fn.lower().endswith(".txt"):
-            txt_file = os.path.join(data_dir, fn)
-            break
-    if txt_file is None:
+    txt_files = [fn for fn in os.listdir(data_dir) if fn.lower().endswith(".txt")]
+    
+    if not txt_files:
         return None
 
-    try:
-        import pandas as pd
-        df = pd.read_csv(txt_file, sep=None, engine="python",
-                         comment="#", skip_blank_lines=True)
-        df.columns = [c.strip() for c in df.columns]
-        if len(df.columns) < 3:
-            return None
-        # Keep only rows whose third column ends with ".png"
-        df = df[df[df.columns[2]].str.strip().str.lower().str.endswith(".png",
-                                                                        na=False)]
-        df = df.rename(columns={
-            df.columns[0]: "Field",
-            df.columns[1]: "Intensity",
-            df.columns[2]: "File",
-        }).reset_index(drop=True)
-        df["Field"] = pd.to_numeric(df["Field"], errors="coerce")
-        df["Intensity"] = pd.to_numeric(df["Intensity"], errors="coerce")
-        df = df.dropna(subset=["Field", "Intensity"])
-        return df if len(df) >= 3 else None
-    except Exception as exc:
-        print(f"  [warn] Could not read txt file {txt_file}: {exc}")
-        return None
+    import pandas as pd
+    
+    for fn in txt_files:
+        txt_file = os.path.join(data_dir, fn)
+        try:
+            # Skip empty files
+            if os.path.getsize(txt_file) == 0:
+                continue
+                
+            # Quick check: a valid data file must reference ".png" files
+            with open(txt_file, 'r', encoding='utf-8', errors='ignore') as f:
+                head = f.read(1024 * 1024)  # Read up to 1MB
+            if ".png" not in head.lower():
+                continue
+
+            # Attempt to read as structured data
+            df = pd.read_csv(txt_file, sep=None, engine="python",
+                             comment="#", skip_blank_lines=True)
+            df.columns = [str(c).strip() for c in df.columns]
+            
+            if len(df.columns) < 3:
+                continue
+                
+            # Check if the third column has ".png" indicating it's the correct file
+            df_filtered = df[df[df.columns[2]].astype(str).str.strip().str.lower().str.endswith(".png", na=False)]
+            
+            if len(df_filtered) >= 3:
+                # We found the valid data file
+                df = df_filtered.rename(columns={
+                    df.columns[0]: "Field",
+                    df.columns[1]: "Intensity",
+                    df.columns[2]: "File",
+                }).reset_index(drop=True)
+                df["Field"] = pd.to_numeric(df["Field"], errors="coerce")
+                df["Intensity"] = pd.to_numeric(df["Intensity"], errors="coerce")
+                df = df.dropna(subset=["Field", "Intensity"])
+                
+                if len(df) >= 3:
+                    return df
+                    
+        except Exception as exc:
+            print_func(f"  [warn] Could not parse {txt_file}: {exc}")
+            continue
+
+    return None
 
 
 def find_background_image(data_dir: str, image_files: list) -> str | None:
@@ -112,13 +135,17 @@ def find_background_image(data_dir: str, image_files: list) -> str | None:
 
 
 def run_subtraction_loop(data_dir: str, txt_df: "pd.DataFrame",
-                         background_array: np.ndarray) -> np.ndarray:
+                         background_array: np.ndarray,
+                         print_func=print,
+                         cancel_event=None) -> np.ndarray:
     """
     Subtract *background_array* from each image listed in *txt_df* and return
     the mean intensity of the difference as a 1-D float32 array.
     """
     means = []
     for row in txt_df.itertuples(index=False):
+        if cancel_event is not None and cancel_event.is_set():
+            raise InterruptedError("Batch run cancelled by user")
         img_file = row.File.strip()
         img_path = os.path.join(data_dir, img_file)
         if not os.path.exists(img_path):
@@ -140,14 +167,14 @@ def run_subtraction_loop(data_dir: str, txt_df: "pd.DataFrame",
             diff = img_c.astype(np.float32) - bg_c.astype(np.float32)
             means.append(float(np.mean(diff)))
         except Exception as exc:
-            print(f"  [warn] Error processing {img_file}: {exc}")
+            print_func(f"  [warn] Error processing {img_file}: {exc}")
             means.append(np.nan)
     return np.array(means, dtype=np.float32)
 
 
 def auto_correct_coeffs(field: np.ndarray, intensity: np.ndarray,
                         drift_corr: bool = True, linear_corr: bool = True,
-                        quad_corr: bool = True) -> dict:
+                        quad_corr: bool = True, print_func=print) -> dict:
     """
     Compute drift, linear Faraday, quadratic Faraday, and quad_offset
     corrections using a branch-aware, shelf-independent algorithm.
@@ -195,7 +222,7 @@ def auto_correct_coeffs(field: np.ndarray, intensity: np.ndarray,
             quad1 = -float(c2)
             quad_offset_val = 0.0
         except Exception as exc:
-            print(f"Error in joint 4-parameter least-squares fit: {exc}")
+            print_func(f"Error in joint 4-parameter least-squares fit: {exc}")
 
     # ------------------------------------------------------------------
     # Pass 2 – second drift correction after all shape corrections
@@ -366,6 +393,7 @@ def extract_step_number(dir_name: str):
 def save_loop_plot(field: np.ndarray, ycorr: np.ndarray,
                    hc_hr: dict, title: str, save_path: str):
     """Save a hysteresis loop figure with Hc/Hr annotations."""
+    import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(6, 4.5))
     ax.plot(field, ycorr, "o-", color="#1F4E79", lw=1.5, markersize=3,
             label="MOKE intensity")
@@ -450,6 +478,7 @@ def save_summary_plots(results: list, analysis_dir: str):
     'dir_name'), create Hc-vs-step and Hr-vs-step plots and a summary CSV.
     """
     import pandas as pd
+    import matplotlib.pyplot as plt
     # Filter to only those with a detected step number
     stepped = [r for r in results if r.get("step") is not None]
     if not stepped:
@@ -568,18 +597,20 @@ def save_full_summary(results: list, analysis_dir: str):
 
 def process_directory(data_dir: str, analysis_dir: str,
                       drift_corr: bool = True, linear_corr: bool = True,
-                      quad_corr: bool = True) -> dict | None:
+                      quad_corr: bool = True,
+                      print_func=print,
+                      cancel_event=None) -> dict | None:
     """
     Process one data sub-directory.  Returns a result dict on success,
     or None on failure (missing data / images).
     """
     dir_name = os.path.basename(data_dir)
-    print(f"\nProcessing: {dir_name}")
+    print_func(f"\nProcessing: {dir_name}")
 
     # ---- Load .txt data file ----
-    txt_df = load_txt_data(data_dir)
+    txt_df = load_txt_data(data_dir, print_func=print_func)
     if txt_df is None:
-        print(f"  [skip] No valid .txt data file found.")
+        print_func(f"  [skip] No valid .txt data file found.")
         return None
 
     field = txt_df["Field"].to_numpy(dtype=np.float32)
@@ -590,26 +621,26 @@ def process_directory(data_dir: str, analysis_dir: str,
         if f.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"))
     ])
     if not image_files:
-        print(f"  [skip] No image files found.")
+        print_func(f"  [skip] No image files found.")
         return None
 
     # ---- Select background image ----
     bg_name = find_background_image(data_dir, image_files)
     if bg_name is None:
-        print(f"  [skip] Could not find a background image.")
+        print_func(f"  [skip] Could not find a background image.")
         return None
     bg_path = os.path.join(data_dir, bg_name)
     try:
         background_array = np.array(Image.open(bg_path))
-        print(f"  Background: {bg_name}")
+        print_func(f"  Background: {bg_name}")
     except Exception as exc:
-        print(f"  [skip] Failed to load background image {bg_name}: {exc}")
+        print_func(f"  [skip] Failed to load background image {bg_name}: {exc}")
         return None
 
     # ---- Image subtraction loop ----
-    raw_intens = run_subtraction_loop(data_dir, txt_df, background_array)
+    raw_intens = run_subtraction_loop(data_dir, txt_df, background_array, print_func=print_func, cancel_event=cancel_event)
     if np.all(np.isnan(raw_intens)):
-        print(f"  [skip] All image subtractions failed (all NaN).")
+        print_func(f"  [skip] All image subtractions failed (all NaN).")
         return None
 
     # Replace NaNs with linear interpolation so corrections don't crash
@@ -621,9 +652,10 @@ def process_directory(data_dir: str, analysis_dir: str,
 
     # ---- Auto-correction ----
     coeffs = auto_correct_coeffs(field, raw_intens, drift_corr=drift_corr,
-                                 linear_corr=linear_corr, quad_corr=quad_corr)
+                                 linear_corr=linear_corr, quad_corr=quad_corr,
+                                 print_func=print_func)
     ycorr  = apply_correction(field, raw_intens, coeffs, normalize=True)
-    print(f"  Auto-correct: drift={coeffs['drift']:.4f}, "
+    print_func(f"  Auto-correct: drift={coeffs['drift']:.4f}, "
           f"linear={coeffs['linear']:.4f}, quad={coeffs['quad']:.6f}, "
           f"quad_offset={coeffs['quad_offset']:.2f} mT")
 
@@ -639,8 +671,8 @@ def process_directory(data_dir: str, analysis_dir: str,
     def _fmt(v):
         return f"{v:.4f}" if v is not None else "n/a"
 
-    print(f"  Hc+ = {_fmt(hc_pos)} mT, Hc- = {_fmt(hc_neg)} mT, Hc = {_fmt(hc_avg)} mT")
-    print(f"  Hr(asc) = {_fmt(hr_asc)}, Hr(desc) = {_fmt(hr_desc)}, |Hr| = {_fmt(hr_abs)}")
+    print_func(f"  Hc+ = {_fmt(hc_pos)} mT, Hc- = {_fmt(hc_neg)} mT, Hc = {_fmt(hc_avg)} mT")
+    print_func(f"  Hr(asc) = {_fmt(hr_asc)}, Hr(desc) = {_fmt(hr_desc)}, |Hr| = {_fmt(hr_abs)}")
 
     # ---- Save outputs ----
     safe_name = re.sub(r"[^\w\-]", "_", dir_name)  # filesystem-safe
@@ -650,13 +682,13 @@ def process_directory(data_dir: str, analysis_dir: str,
     save_loop_plot(field, ycorr, hc_hr, title=dir_name, save_path=loop_img_path)
     save_loop_data(field, raw_intens, ycorr, hc_hr, coeffs,
                    dir_name=dir_name, save_path=loop_data_path)
-    print(f"  [ok] Saved {os.path.basename(loop_img_path)} and "
+    print_func(f"  [ok] Saved {os.path.basename(loop_img_path)} and "
           f"{os.path.basename(loop_data_path)}")
 
     # ---- Step detection ----
     step = extract_step_number(dir_name)
     if step is not None:
-        print(f"  Step number detected: {step}")
+        print_func(f"  Step number detected: {step}")
 
     return dict(
         dir_name=dir_name,
@@ -670,15 +702,67 @@ def process_directory(data_dir: str, analysis_dir: str,
     )
 
 
-def run_batch(parent_dir: str, drift_corr: bool = True, linear_corr: bool = True,
-              quad_corr: bool = True):
+def process_directory_worker(args):
     """
-    Top-level batch routine.  Scans *parent_dir* for data sub-directories,
-    processes each one, and saves results + summary to an 'Analysis' sub-folder.
+    Worker function for parallel pools.
+    args: tuple of (data_dir, analysis_dir, drift, linear, quad, cancel_event)
+    """
+    # Set headless backend immediately for worker process
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+    except Exception:
+        pass
+
+    data_dir, analysis_dir, drift, linear, quad, cancel_event = args
+    dir_name = os.path.basename(data_dir)
+    log_lines = []
+    
+    # Touch a temporary status file to provide immediate UI feedback in Process Mode
+    status_file = os.path.join(analysis_dir, f".status_{dir_name}.running")
+    try:
+        with open(status_file, 'w') as f:
+            f.write("1")
+    except Exception:
+        pass
+    
+    def buffered_print(*msg_args, **kwargs):
+        sep = kwargs.get('sep', ' ')
+        msg_str = sep.join(map(str, msg_args))
+        log_lines.append(msg_str)
+        
+    try:
+        result = process_directory(
+            data_dir, analysis_dir,
+            drift_corr=drift, linear_corr=linear, quad_corr=quad,
+            print_func=buffered_print, cancel_event=cancel_event
+        )
+        return result, log_lines, None
+    except Exception as exc:
+        import traceback
+        err_str = f"Error processing {os.path.basename(data_dir)}: {exc}\n{traceback.format_exc()}"
+        return None, log_lines, err_str
+    finally:
+        try:
+            if os.path.exists(status_file):
+                os.remove(status_file)
+        except Exception:
+            pass
+
+
+def run_batch(parent_dir: str, drift_corr: bool = True, linear_corr: bool = True,
+              quad_corr: bool = True, mode="processes", max_workers=None,
+              cancel_event=None, thread_ref=None):
+    """
+    Top-level batch routine. Scans *parent_dir* for data sub-directories,
+    processes them (sequentially, via thread pool, or via process pool),
+    and saves results + summary to an 'Analysis' sub-folder.
     """
     parent_dir = os.path.abspath(parent_dir)
     print(f"\n{'='*60}")
-    print(f"Batch processing: {parent_dir}")
+    print(f"Batch processing ({mode} mode): {parent_dir}")
+    if max_workers:
+        print(f"Workers: {max_workers}")
     print(f"{'='*60}")
 
     # ---- Discover sub-directories ----
@@ -698,36 +782,165 @@ def run_batch(parent_dir: str, drift_corr: bool = True, linear_corr: bool = True
     os.makedirs(analysis_dir, exist_ok=True)
     print(f"Output folder: {analysis_dir}\n")
 
-    # ---- Process each sub-directory ----
     results = []
-    for data_dir in sub_dirs:
-        result = process_directory(data_dir, analysis_dir,
-                                   drift_corr=drift_corr,
-                                   linear_corr=linear_corr,
-                                   quad_corr=quad_corr)
-        if result is not None:
-            results.append(result)
+    total_dirs = len(sub_dirs)
+    start_time = time.time()
 
-    if not results:
-        print("\n[warn] No directories were processed successfully.")
-        return
+    if mode == "processes":
+        import multiprocessing
+        
+        # Prepare arguments (cancel_event is None for processes, we use pool.terminate())
+        tasks = [
+            (d, analysis_dir, drift_corr, linear_corr, quad_corr, None)
+            for d in sub_dirs
+        ]
+        
+        num_procs = max_workers if max_workers else max(1, multiprocessing.cpu_count() - 1)
+        print(f"\n[info] Spinning up background processes... (This usually takes 5-10 seconds on Windows)")
+        print(f"Starting Process Pool with {num_procs} workers...")
+        
+        pool = multiprocessing.Pool(processes=num_procs)
+        if thread_ref is not None:
+            thread_ref.active_pool = pool
+            
+        try:
+            pending = []
+            for i, task in enumerate(tasks):
+                dir_name = os.path.basename(task[0])
+                print(f"[{i+1}/{total_dirs}] Queued: {dir_name}")
+                res = pool.apply_async(process_directory_worker, (task,))
+                pending.append((dir_name, res))
+                
+            completed = 0
+            running_reported = set()
+            while pending:
+                if cancel_event is not None and cancel_event.is_set():
+                    print("\n[info] Cancellation detected in run_batch. Terminating process pool...")
+                    pool.terminate()
+                    pool.join()
+                    return
+                    
+                # Poll status files to provide immediate feedback for Multi-processed mode
+                for dir_name, _ in pending:
+                    if dir_name not in running_reported:
+                        status_file = os.path.join(analysis_dir, f".status_{dir_name}.running")
+                        if os.path.exists(status_file):
+                            print(f"  -> Started processing: {dir_name}")
+                            running_reported.add(dir_name)
+                            
+                still_pending = []
+                for dir_name, res in pending:
+                    if res.ready():
+                        completed += 1
+                        try:
+                            result, log_lines, err_str = res.get()
+                            print(f"\n--- Log for {dir_name} [{completed}/{total_dirs}] ---")
+                            for line in log_lines:
+                                print(line)
+                            if err_str:
+                                print(f"[ERROR] {err_str}")
+                            if result is not None:
+                                results.append(result)
+                        except Exception as exc:
+                            print(f"\n[ERROR] Task for {dir_name} raised exception: {exc}")
+                    else:
+                        still_pending.append((dir_name, res))
+                pending = still_pending
+                time.sleep(0.1)
+                
+            pool.close()
+            pool.join()
+        except Exception as e:
+            pool.terminate()
+            pool.join()
+            raise e
+            
+    elif mode == "threads":
+        import concurrent.futures
+        
+        tasks = [
+            (d, analysis_dir, drift_corr, linear_corr, quad_corr, cancel_event)
+            for d in sub_dirs
+        ]
+        
+        num_threads = max_workers if max_workers else max(1, os.cpu_count() - 1)
+        print(f"Starting Thread Pool with {num_threads} workers...")
+        
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_threads)
+        if thread_ref is not None:
+            thread_ref.active_executor = executor
+            
+        try:
+            futures = {}
+            for i, task in enumerate(tasks):
+                dir_name = os.path.basename(task[0])
+                print(f"[{i+1}/{total_dirs}] Queued: {dir_name}")
+                f = executor.submit(process_directory_worker, task)
+                futures[f] = dir_name
+                
+            completed = 0
+            pending = set(futures.keys())
+            running_reported = set()
 
-    # ---- Per-step summary plots (only if step numbers detected) ----
-    has_steps = any(r.get("step") is not None for r in results)
-    if has_steps:
-        print(f"\nGenerating step-number summary plots…")
-        save_summary_plots(results, analysis_dir)
-    else:
-        print("\n[info] No sequential step numbers detected – "
-              "skipping Hc/Hr-vs-step plots.")
+            while pending:
+                if cancel_event is not None and cancel_event.is_set():
+                    print("\n[info] Cancellation detected. Shutting down thread pool...")
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return
+                
+                # Check for tasks that just started running to provide immediate visual feedback
+                for f in pending:
+                    if f.running() and futures[f] not in running_reported:
+                        print(f"  -> Started processing: {futures[f]}")
+                        running_reported.add(futures[f])
 
-    # ---- Full results table (all directories) ----
-    save_full_summary(results, analysis_dir)
+                # Wait for any task to finish, up to 0.2 seconds
+                done, pending = concurrent.futures.wait(
+                    pending, timeout=0.2, return_when=concurrent.futures.FIRST_COMPLETED
+                )
+                
+                for f in done:
+                    dir_name = futures[f]
+                    completed += 1
+                    try:
+                        result, log_lines, err_str = f.result()
+                        print(f"\n--- Log for {dir_name} [{completed}/{total_dirs}] ---")
+                        for line in log_lines:
+                            print(line)
+                        if err_str:
+                            print(f"[ERROR] {err_str}")
+                        if result is not None:
+                            results.append(result)
+                    except Exception as exc:
+                        print(f"\n[ERROR] Task for {dir_name} raised exception: {exc}")
+            
+            executor.shutdown(wait=True)
+        except Exception as e:
+            executor.shutdown(wait=False, cancel_futures=True)
+            raise e
+            
+    else:  # sequential mode
+        print("Starting Sequential execution...")
+        for i, data_dir in enumerate(sub_dirs):
+            if cancel_event is not None and cancel_event.is_set():
+                print("\n[info] Cancellation detected. Halting sequential batch...")
+                return
+            dir_name = os.path.basename(data_dir)
+            print(f"[{i+1}/{total_dirs}] Processing: {dir_name}")
+            
+            task = (data_dir, analysis_dir, drift_corr, linear_corr, quad_corr, cancel_event)
+            result, log_lines, err_str = process_directory_worker(task)
+            
+            print(f"\n--- Log for {dir_name} [{i+1}/{total_dirs}] ---")
+            for line in log_lines:
+                print(line)
+            if err_str:
+                print(f"[ERROR] {err_str}")
+            if result is not None:
+                results.append(result)
 
-    print(f"\n{'='*60}")
-    print(f"Batch complete.  {len(results)} / {len(sub_dirs)} directories processed.")
-    print(f"Results saved to: {analysis_dir}")
-    print(f"{'='*60}\n")
+    elapsed_total = time.time() - start_time
+    print(f"\nAll processing tasks completed in {elapsed_total:.2f} seconds.")
 
 
 # ---------------------------------------------------------------------------
@@ -735,31 +948,64 @@ def run_batch(parent_dir: str, drift_corr: bool = True, linear_corr: bool = True
 # ---------------------------------------------------------------------------
 
 class StdoutRedirector(object):
-    def __init__(self, signal):
+    def __init__(self, signal, original_stream, only_thread=False):
         self.signal = signal
+        self.original_stream = original_stream
+        self.only_thread = only_thread
 
     def write(self, text):
-        self.signal.emit(text)
+        if self.only_thread:
+            try:
+                from PyQt5.QtCore import QThread
+                current = QThread.currentThread()
+                if current and current.objectName() == "BatchProcessorThread":
+                    self.signal.emit(text)
+                    return
+            except Exception:
+                pass
+            if self.original_stream:
+                self.original_stream.write(text)
+        else:
+            self.signal.emit(text)
 
     def flush(self):
-        pass
+        if self.original_stream:
+            self.original_stream.flush()
 
 
 if HAS_PYQT5:
     class ProcessingThread(QThread):
         finished_signal = pyqtSignal(bool)
 
-        def __init__(self, parent_dir, drift, linear, quad):
+        def __init__(self, parent_dir, drift, linear, quad, mode="processes", max_workers=4):
             super().__init__()
+            self.setObjectName("BatchProcessorThread")
             self.parent_dir = parent_dir
             self.drift = drift
             self.linear = linear
             self.quad = quad
+            self.mode = mode
+            self.max_workers = max_workers
+            self.cancel_event = threading.Event()
+            self.active_pool = None
+            self.active_executor = None
 
         def run(self):
             try:
-                run_batch(self.parent_dir, drift_corr=self.drift, linear_corr=self.linear, quad_corr=self.quad)
-                self.finished_signal.emit(True)
+                run_batch(
+                    self.parent_dir,
+                    drift_corr=self.drift,
+                    linear_corr=self.linear,
+                    quad_corr=self.quad,
+                    mode=self.mode,
+                    max_workers=self.max_workers,
+                    cancel_event=self.cancel_event,
+                    thread_ref=self
+                )
+                if self.cancel_event.is_set():
+                    self.finished_signal.emit(False)
+                else:
+                    self.finished_signal.emit(True)
             except Exception as e:
                 print(f"\n[ERROR] Batch processing failed: {e}")
                 self.finished_signal.emit(False)
@@ -768,8 +1014,9 @@ if HAS_PYQT5:
     class BatchProcessorGUI(QWidget):
         append_text = pyqtSignal(str)
 
-        def __init__(self, parent_dir=None, theme="dark"):
-            super().__init__()
+        def __init__(self, parent_dir=None, theme="dark", parent=None):
+            super().__init__(None)
+            self.parent_launcher = parent
             self.parent_dir = parent_dir or ""
             self.theme = theme
             self.thread = None
@@ -782,13 +1029,16 @@ if HAS_PYQT5:
             
             # Connect the redirection signal
             self.append_text.connect(self.on_append_text)
-            sys.stdout = StdoutRedirector(self.append_text)
-            sys.stderr = StdoutRedirector(self.append_text)
+            
+            # If parent is provided (we are embedded), redirect only from BatchProcessorThread.
+            only_thread = (parent is not None)
+            sys.stdout = StdoutRedirector(self.append_text, sys.stdout, only_thread=only_thread)
+            sys.stderr = StdoutRedirector(self.append_text, sys.stderr, only_thread=only_thread)
 
         def init_ui(self):
             self.setObjectName("MainBg")
             self.setWindowTitle("Batch Hysteresis Loop Processor")
-            self.resize(750, 600)
+            self.resize(750, 680)
 
             # Main layout
             layout = QVBoxLayout(self)
@@ -842,6 +1092,36 @@ if HAS_PYQT5:
             layout_corr.addWidget(self.chk_quad)
             layout.addWidget(group_corr)
 
+            # 2.5. Parallel Settings GroupBox
+            group_parallel = QGroupBox("Parallel Processing Settings")
+            layout_parallel = QHBoxLayout(group_parallel)
+            layout_parallel.setContentsMargins(15, 15, 15, 15)
+            layout_parallel.setSpacing(20)
+
+            lbl_mode = QLabel("Execution Mode:")
+            layout_parallel.addWidget(lbl_mode)
+
+            self.cmb_mode = QComboBox()
+            self.cmb_mode.addItems([
+                "Sequential",
+                "Multi-threaded (GIL-bound)",
+                "Multi-processed (Fastest)"
+            ])
+            self.cmb_mode.setCurrentIndex(2)  # Default to Multi-processed
+            layout_parallel.addWidget(self.cmb_mode)
+
+            lbl_workers = QLabel("Max CPU Workers:")
+            layout_parallel.addWidget(lbl_workers)
+
+            self.spin_workers = QSpinBox()
+            self.spin_workers.setRange(1, os.cpu_count() or 4)
+            default_workers = max(1, (os.cpu_count() or 4) - 1)
+            self.spin_workers.setValue(default_workers)
+            layout_parallel.addWidget(self.spin_workers)
+            
+            self.cmb_mode.currentIndexChanged.connect(self.on_mode_changed)
+            layout.addWidget(group_parallel)
+
             # 3. Actions Row
             layout_actions = QHBoxLayout()
             
@@ -874,6 +1154,13 @@ if HAS_PYQT5:
 
             # Apply QSS Styling
             apply_theme(self, self.theme)
+            self.on_mode_changed(self.cmb_mode.currentIndex())
+
+        def on_mode_changed(self, index):
+            if index == 0:  # Sequential
+                self.spin_workers.setEnabled(False)
+            else:
+                self.spin_workers.setEnabled(True)
 
         def on_browse(self):
             start_dir = self.txt_dir.text() or os.path.dirname(os.path.abspath(__file__))
@@ -896,12 +1183,26 @@ if HAS_PYQT5:
             self.chk_drift.setEnabled(False)
             self.chk_linear.setEnabled(False)
             self.chk_quad.setEnabled(False)
+            self.cmb_mode.setEnabled(False)
+            self.spin_workers.setEnabled(False)
+
+            mode_idx = self.cmb_mode.currentIndex()
+            if mode_idx == 0:
+                mode = "sequential"
+            elif mode_idx == 1:
+                mode = "threads"
+            else:
+                mode = "processes"
+
+            max_workers = self.spin_workers.value()
 
             self.thread = ProcessingThread(
                 parent_dir,
                 drift=self.chk_drift.isChecked(),
                 linear=self.chk_linear.isChecked(),
-                quad=self.chk_quad.isChecked()
+                quad=self.chk_quad.isChecked(),
+                mode=mode,
+                max_workers=max_workers
             )
             self.thread.finished_signal.connect(self.on_processing_finished)
             self.thread.start()
@@ -909,9 +1210,19 @@ if HAS_PYQT5:
         def on_stop_batch(self):
             if self.thread and self.thread.isRunning():
                 self.txt_console.append("\n[info] Stopping batch process...")
-                self.thread.terminate()
-                self.thread.wait()
-                self.on_processing_finished(False)
+                self.thread.cancel_event.set()
+                if self.thread.active_pool:
+                    try:
+                        self.thread.active_pool.terminate()
+                    except Exception:
+                        pass
+                if self.thread.active_executor:
+                    try:
+                        self.thread.active_executor.shutdown(wait=False, cancel_futures=True)
+                    except Exception:
+                        pass
+                self.btn_stop.setEnabled(False)
+                # Thread will gracefully exit and trigger on_processing_finished on its own.
 
         def on_clear_log(self):
             self.txt_console.clear()
@@ -928,15 +1239,38 @@ if HAS_PYQT5:
             self.chk_drift.setEnabled(True)
             self.chk_linear.setEnabled(True)
             self.chk_quad.setEnabled(True)
-            self.thread = None
+            self.cmb_mode.setEnabled(True)
+            self.on_mode_changed(self.cmb_mode.currentIndex())
+            if self.thread is not None:
+                self.thread.deleteLater()
+                self.thread = None
 
         def closeEvent(self, event):
             if self.thread and self.thread.isRunning():
-                self.thread.terminate()
+                try:
+                    self.thread.finished_signal.disconnect()
+                except Exception:
+                    pass
+                self.thread.cancel_event.set()
+                if self.thread.active_pool:
+                    try:
+                        self.thread.active_pool.terminate()
+                    except Exception:
+                        pass
+                if self.thread.active_executor:
+                    try:
+                        self.thread.active_executor.shutdown(wait=False, cancel_futures=True)
+                    except Exception:
+                        pass
                 self.thread.wait()
             sys.stdout = self.old_stdout
             sys.stderr = self.old_stderr
             event.accept()
+
+        def change_theme(self, theme):
+            self.theme = theme
+            from gui_styles import apply_theme
+            apply_theme(self, theme)
 
 
 # ---------------------------------------------------------------------------
@@ -956,6 +1290,12 @@ def main():
     parser.add_argument(
         "--theme", type=str, default="dark", choices=["dark", "charcoal", "light"],
         help="Theme to apply (dark, charcoal, or light). Only effective in GUI mode.")
+    parser.add_argument(
+        "--mode", type=str, default="processes", choices=["sequential", "threads", "processes"],
+        help="Parallel processing mode (default: processes).")
+    parser.add_argument(
+        "--workers", type=int, default=None,
+        help="Maximum number of parallel workers. Defaults to CPU count - 1.")
     args = parser.parse_args()
 
     parent_dir = args.parent_dir
@@ -966,6 +1306,8 @@ def main():
 
     if headless:
         # Run CLI mode
+        import matplotlib
+        matplotlib.use("Agg")
         if parent_dir is None:
             # Fall back to tkinter folder picker (no PyQt5 needed here)
             try:
@@ -989,7 +1331,7 @@ def main():
             print(f"[error] Not a directory: {parent_dir}")
             sys.exit(1)
 
-        run_batch(parent_dir)
+        run_batch(parent_dir, mode=args.mode, max_workers=args.workers)
     else:
         # Run GUI mode
         # Enable high DPI scaling if supported (must be set before QApplication creation)

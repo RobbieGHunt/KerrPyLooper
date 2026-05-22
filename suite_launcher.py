@@ -24,7 +24,7 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QFrame, QSplitter, QTextEdit, QMessageBox,
     QFileDialog, QProgressBar, QGraphicsDropShadowEffect, QComboBox
 )
-from PyQt5.QtGui import QFont, QColor, QTextCursor, QPainter, QPainterPath, QPen
+from PyQt5.QtGui import QFont, QColor, QTextCursor, QPainter, QPainterPath, QPen, QBrush, QConicalGradient, QRadialGradient
 from PyQt5.QtCore import Qt, QProcess, QProcessEnvironment
 
 from gui_styles import apply_theme
@@ -49,7 +49,16 @@ TOOL_REGISTRY = [
         "description": "Scan a parent directory for multiple sweep directories, apply Z-drift & Faraday corrections automatically, calculate Hc/Hr, and save individual plots, loop files, and tab-delimited summaries.",
         "script": "batch_processor.py",
         "icon": "⚙️",
-        "prompt_directory": True,
+        "prompt_directory": False,
+    },
+    {
+        "id": "vector_analysis",
+        "name": "Vector Maps",
+        "subtitle": "Magnetization Vector Analysis",
+        "description": "Generate 2D magnetization vector maps from X/Y MOKE image sweeps. Select cropping bounds, apply wavelet denoising, overlay quiver arrows with scale bars, and export vector map plots and loop curves.",
+        "script": "vector_analysis.py",
+        "icon": "🧭",
+        "prompt_directory": False,
     }
 ]
 
@@ -120,6 +129,117 @@ class HysteresisLoopWidget(QWidget):
         painter.drawPath(path)
         painter.end()
 
+
+# ==============================================================================
+# CUSTOM MAGNETIC VORTEX WIDGET (ICON)
+# ==============================================================================
+class VortexWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(80, 80)
+        self.setMaximumSize(120, 120)
+        self.theme = "charcoal"
+        
+    def set_theme(self, theme):
+        self.theme = theme
+        self.update()
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Determine colors based on theme
+        from gui_styles import get_theme_colors
+        colors = get_theme_colors(self.theme)
+        
+        w, h = self.width(), self.height()
+        margin = 10
+        cx, cy = w / 2.0, h / 2.0
+        r_max = min(w, h) / 2.0 - margin
+        
+        # Draw the permalloy dot circle filled with conical HSV gradient
+        gradient = QConicalGradient(cx, cy, 90.0) # Start angle at 90 degrees
+        for i in range(361):
+            spin_angle = (i + 180) % 360
+            color = QColor.fromHsv(spin_angle, 220, 240)
+            gradient.setColorAt(i / 360.0, color)
+            
+        painter.setBrush(gradient)
+        border_color = QColor(colors["border"])
+        painter.setPen(QPen(border_color, 1.5, Qt.SolidLine))
+        painter.drawEllipse(int(cx - r_max), int(cy - r_max), int(2 * r_max), int(2 * r_max))
+        
+        # Define helper for high-contrast vector arrows (visible on any HSV color background)
+        def draw_vortex_arrow(radius, angle_deg):
+            rad = math.radians(angle_deg)
+            # The position of the arrow center
+            px = cx + radius * math.cos(rad)
+            py = cy - radius * math.sin(rad)
+            
+            # The direction of the arrow is tangent to the circle (CCW): (-sin(rad), -cos(rad)) in Qt
+            tx = -math.sin(rad)
+            ty = -math.cos(rad)
+            
+            # Draw a short line segment representing the vector
+            length = 9
+            start_x = px - (length / 2.0) * tx
+            start_y = py - (length / 2.0) * ty
+            end_x = px + (length / 2.0) * tx
+            end_y = py + (length / 2.0) * ty
+            
+            # Arrowhead details
+            nx = math.cos(rad)
+            ny = -math.sin(rad)
+            arrow_len = 4
+            p1_x = end_x - arrow_len * tx + arrow_len * 0.45 * nx
+            p1_y = end_y - arrow_len * ty + arrow_len * 0.45 * ny
+            p2_x = end_x - arrow_len * tx - arrow_len * 0.45 * nx
+            p2_y = end_y - arrow_len * ty - arrow_len * 0.45 * ny
+            
+            # 1. Draw black outline/shadow for readability
+            pen_bg = QPen(QColor(0, 0, 0, 160), 2.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            painter.setPen(pen_bg)
+            painter.drawLine(int(start_x), int(start_y), int(end_x), int(end_y))
+            painter.drawLine(int(end_x), int(end_y), int(p1_x), int(p1_y))
+            painter.drawLine(int(end_x), int(end_y), int(p2_x), int(p2_y))
+            
+            # 2. Draw white foreground arrow line
+            pen_fg = QPen(QColor(255, 255, 255, 240), 1.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            painter.setPen(pen_fg)
+            painter.drawLine(int(start_x), int(start_y), int(end_x), int(end_y))
+            painter.drawLine(int(end_x), int(end_y), int(p1_x), int(p1_y))
+            painter.drawLine(int(end_x), int(end_y), int(p2_x), int(p2_y))
+            
+        # Draw vector arrow distribution over concentric rings
+        # Ring 1 (Outer, r = r_max * 0.8): 8 arrows
+        for angle in [0, 45, 90, 135, 180, 225, 270, 315]:
+            draw_vortex_arrow(r_max * 0.8, angle)
+            
+        # Ring 2 (Middle, r = r_max * 0.55): 6 arrows
+        for angle in [30, 90, 150, 210, 270, 330]:
+            draw_vortex_arrow(r_max * 0.55, angle)
+            
+        # Ring 3 (Inner, r = r_max * 0.3): 3 arrows
+        for angle in [0, 120, 240]:
+            draw_vortex_arrow(r_max * 0.3, angle)
+            
+        # Draw the out-of-plane core in the center using radial gradient (white core fading out)
+        core_grad = QRadialGradient(cx, cy, 6)
+        core_grad.setColorAt(0.0, QColor(255, 255, 255, 255))
+        core_grad.setColorAt(0.3, QColor(255, 255, 255, 200))
+        core_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+        
+        painter.setBrush(core_grad)
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(int(cx - 6), int(cy - 6), 12, 12)
+        
+        # Add a tiny black core dot at the very center (core polarization direction)
+        painter.setBrush(QBrush(QColor(0, 0, 0, 220)))
+        painter.drawEllipse(int(cx - 1.5), int(cy - 1.5), 3, 3)
+        
+        painter.end()
+
+
 # ==============================================================================
 # TOOL CARD COMPONENT
 # ==============================================================================
@@ -129,6 +249,7 @@ class ToolCardWidget(QFrame):
         self.setObjectName("ToolCard")
         self.config = tool_config
         self.loop_widget = None
+        self.vortex_widget = None
         
         # Setup vertical layout
         layout = QVBoxLayout(self)
@@ -141,6 +262,13 @@ class ToolCardWidget(QFrame):
             icon_layout = QHBoxLayout()
             icon_layout.addStretch()
             icon_layout.addWidget(self.loop_widget)
+            icon_layout.addStretch()
+            layout.addLayout(icon_layout)
+        elif tool_config["id"] == "vector_analysis":
+            self.vortex_widget = VortexWidget(self)
+            icon_layout = QHBoxLayout()
+            icon_layout.addStretch()
+            icon_layout.addWidget(self.vortex_widget)
             icon_layout.addStretch()
             layout.addLayout(icon_layout)
         else:
@@ -189,6 +317,8 @@ class ToolCardWidget(QFrame):
     def set_theme(self, theme):
         if self.loop_widget:
             self.loop_widget.set_theme(theme)
+        if self.vortex_widget:
+            self.vortex_widget.set_theme(theme)
 
 
 # ==============================================================================
@@ -200,8 +330,11 @@ class SuiteLauncherWindow(QMainWindow):
         self.setWindowTitle("KerrPyLooper Analysis Suite")
         self.setMinimumSize(950, 700)
         self.current_process = None
-        self.current_theme = "dark"
+        self.current_theme = "charcoal"
         self.cards = []
+        self.active_looper_window = None
+        self.active_batch_window = None
+        self.active_vector_window = None
         self.init_ui()
         
     def init_ui(self):
@@ -237,8 +370,8 @@ class SuiteLauncherWindow(QMainWindow):
         # Theme selector dropdown
         self.theme_selector = QComboBox()
         self.theme_selector.setObjectName("ThemeSelector")
-        self.theme_selector.addItem("🌙 Slate Dark", "dark")
         self.theme_selector.addItem("🌑 Charcoal Dark", "charcoal")
+        self.theme_selector.addItem("🌙 Slate Dark", "dark")
         self.theme_selector.addItem("☀️ Slate Light", "light")
         self.theme_selector.setMinimumWidth(150)
         self.theme_selector.currentIndexChanged.connect(self.on_theme_changed)
@@ -329,6 +462,12 @@ class SuiteLauncherWindow(QMainWindow):
         apply_theme(self, self.current_theme)
         for card in self.cards:
             card.set_theme(self.current_theme)
+        if self.active_looper_window is not None:
+            self.active_looper_window.change_theme(self.current_theme)
+        if self.active_batch_window is not None:
+            self.active_batch_window.change_theme(self.current_theme)
+        if self.active_vector_window is not None:
+            self.active_vector_window.change_theme(self.current_theme)
             
     def log(self, text):
         """Append text to the console output text widget."""
@@ -348,6 +487,97 @@ class SuiteLauncherWindow(QMainWindow):
             
     def on_launch_tool(self, tool_config):
         """Callback when a card launch button is pressed."""
+        if tool_config["id"] == "kerr_looper":
+            if self.active_looper_window is not None:
+                self.active_looper_window.show()
+                self.active_looper_window.raise_()
+                self.active_looper_window.activateWindow()
+                self.log("[Info] Brought active Kerr MOKE Looper window to focus.")
+            else:
+                self.log("[Info] Launching Kerr MOKE Looper in same process...")
+                try:
+                    from kerr_looper_AG import MOKEImageSubtractor
+                    window = MOKEImageSubtractor(theme=self.current_theme)
+                    
+                    # Intercept closeEvent to clear reference
+                    orig_close = window.closeEvent
+                    def custom_close(event):
+                        orig_close(event)
+                        if event.isAccepted():
+                            self.active_looper_window = None
+                            self.log("[Info] Kerr MOKE Looper window closed.")
+                    window.closeEvent = custom_close
+                    
+                    self.active_looper_window = window
+                    window.show()
+                    self.log("[Info] Kerr MOKE Looper launched successfully.")
+                except Exception as e:
+                    self.log(f"[Error] Failed to launch Kerr MOKE Looper: {e}")
+                    import traceback
+                    self.log(traceback.format_exc())
+                    QMessageBox.critical(self, "Error", f"Failed to launch Kerr MOKE Looper:\n{e}")
+            return
+        elif tool_config["id"] == "batch_processor":
+            if self.active_batch_window is not None:
+                self.active_batch_window.show()
+                self.active_batch_window.raise_()
+                self.active_batch_window.activateWindow()
+                self.log("[Info] Brought active Batch Loop Processor window to focus.")
+            else:
+                self.log("[Info] Launching Batch Loop Processor in same process...")
+                try:
+                    from batch_processor import BatchProcessorGUI
+                    window = BatchProcessorGUI(theme=self.current_theme, parent=self)
+                    
+                    # Intercept closeEvent to clear reference
+                    orig_close = window.closeEvent
+                    def custom_close(event):
+                        orig_close(event)
+                        if event.isAccepted():
+                            self.active_batch_window = None
+                            self.log("[Info] Batch Loop Processor window closed.")
+                    window.closeEvent = custom_close
+                    
+                    self.active_batch_window = window
+                    window.show()
+                    self.log("[Info] Batch Loop Processor launched successfully.")
+                except Exception as e:
+                    self.log(f"[Error] Failed to launch Batch Loop Processor: {e}")
+                    import traceback
+                    self.log(traceback.format_exc())
+                    QMessageBox.critical(self, "Error", f"Failed to launch Batch Loop Processor:\n{e}")
+            return
+        elif tool_config["id"] == "vector_analysis":
+            if self.active_vector_window is not None:
+                self.active_vector_window.show()
+                self.active_vector_window.raise_()
+                self.active_vector_window.activateWindow()
+                self.log("[Info] Brought active Vector Maps window to focus.")
+            else:
+                self.log("[Info] Launching Vector Maps in same process...")
+                try:
+                    from vector_analysis import VectorAnalysisGUI
+                    window = VectorAnalysisGUI(theme=self.current_theme, parent=None)
+                    
+                    # Intercept closeEvent to clear reference
+                    orig_close = window.closeEvent
+                    def custom_close(event):
+                        orig_close(event)
+                        if event.isAccepted():
+                            self.active_vector_window = None
+                            self.log("[Info] Vector Maps window closed.")
+                    window.closeEvent = custom_close
+                    
+                    self.active_vector_window = window
+                    window.show()
+                    self.log("[Info] Vector Maps launched successfully.")
+                except Exception as e:
+                    self.log(f"[Error] Failed to launch Vector Maps: {e}")
+                    import traceback
+                    self.log(traceback.format_exc())
+                    QMessageBox.critical(self, "Error", f"Failed to launch Vector Maps:\n{e}")
+            return
+
         if self.current_process is not None:
             QMessageBox.warning(
                 self, "Process Running", 
@@ -470,10 +700,22 @@ class SuiteLauncherWindow(QMainWindow):
             if reply == QMessageBox.Yes:
                 self.current_process.kill()
                 self.current_process.waitForFinished(1000)
+                if self.active_looper_window is not None:
+                    self.active_looper_window.close()
+                if self.active_batch_window is not None:
+                    self.active_batch_window.close()
+                if self.active_vector_window is not None:
+                    self.active_vector_window.close()
                 event.accept()
             else:
                 event.ignore()
         else:
+            if self.active_looper_window is not None:
+                self.active_looper_window.close()
+            if self.active_batch_window is not None:
+                self.active_batch_window.close()
+            if self.active_vector_window is not None:
+                self.active_vector_window.close()
             event.accept()
 
 

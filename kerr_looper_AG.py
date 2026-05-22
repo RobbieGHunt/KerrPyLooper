@@ -8,7 +8,6 @@ Created on Mon May 18 18:36:05 2026
 import sys
 import os
 import numpy as np
-import pandas as pd
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QFileDialog, QVBoxLayout, QPushButton,
     QListWidget, QLabel, QMessageBox, QHBoxLayout, QSlider,
@@ -19,11 +18,13 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QBrush
 from PyQt5.QtCore import Qt, QRect, QPoint, pyqtSignal, QSize, QRectF, QPointF
 from PIL import Image
-import matplotlib.pyplot as plt
+import pandas as pd
+import scipy.ndimage as ndimage
+from scipy.optimize import minimize_scalar
+import matplotlib as mpl
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
-import scipy.ndimage as ndimage
 
 
 class StyledSplitterHandle(QSplitterHandle):
@@ -168,7 +169,6 @@ def estimate_defocus(ref_img_norm, target_img_norm):
         blurred_grad = get_gradient_magnitude(blurred_ref)
         return np.mean((target_grad - blurred_grad) ** 2)
     
-    from scipy.optimize import minimize_scalar
     res = minimize_scalar(loss, bounds=(0.0, 3.0), method='bounded')
     return res.x
 
@@ -590,6 +590,10 @@ class LoopCorrectionPanel(QWidget):
         self.contrast = 1.0
         self.parent_widget = parent
         self.hc_hr_marks = None  # Stores latest Hc/Hr marks for highlighting
+        self.figure = None
+        self.ax = None
+        self.canvas = None
+        self.toolbar = None
         self.init_ui()
 
     def init_ui(self):
@@ -597,34 +601,32 @@ class LoopCorrectionPanel(QWidget):
         splitter = StyledSplitter(Qt.Vertical)
         splitter.setHandleWidth(8)
 
-        # Top widget: Plot canvas and Navigation Toolbar
+        # Top widget: Plot canvas container
         plot_container = QWidget()
-        plot_layout = QVBoxLayout()
-        plot_layout.setContentsMargins(0, 0, 0, 0)
+        self.plot_layout = QVBoxLayout()
+        self.plot_layout.setContentsMargins(0, 0, 0, 0)
         
         theme = "dark"
         if self.parent_widget and hasattr(self.parent_widget, 'theme'):
             theme = self.parent_widget.theme
         from gui_styles import get_theme_colors
         colors = get_theme_colors(theme)
-        fig_bg = colors["card"]
         ax_bg = colors["bg"]
+        text_color = colors["text"]
         
-        self.figure = Figure(figsize=(4, 6), facecolor=fig_bg)
-        self.ax = self.figure.add_subplot(111)
-        self.ax.set_facecolor(ax_bg)
-        self.canvas = FigureCanvas(self.figure)
-        self.canvas.setMinimumHeight(100)
+        # Placeholder label
+        self.placeholder_label = QLabel("No data loaded. Select a directory and click 'Make Loop' to plot.")
+        self.placeholder_label.setAlignment(Qt.AlignCenter)
+        self.placeholder_label.setObjectName("PlotPlaceholder")
+        self.placeholder_label.setStyleSheet(
+            f"background-color: {ax_bg}; color: {text_color}; border-radius: 6px; "
+            f"font-size: 14px; font-weight: 500; border: 1px solid {colors['border']};"
+        )
+        self.placeholder_label.setWordWrap(True)
+        self.placeholder_label.setContentsMargins(20, 20, 20, 20)
         
-        # Override the resize event to scale plot elements proportionally
-        self.canvas.original_resizeEvent = self.canvas.resizeEvent
-        self.canvas.resizeEvent = self.on_canvas_resize
-        
-        self.toolbar = NavigationToolbar(self.canvas, self)
-        
-        plot_layout.addWidget(self.canvas)
-        plot_layout.addWidget(self.toolbar)
-        plot_container.setLayout(plot_layout)
+        self.plot_layout.addWidget(self.placeholder_label)
+        plot_container.setLayout(self.plot_layout)
         splitter.addWidget(plot_container)
 
         # Bottom widget: Controls container
@@ -1178,7 +1180,14 @@ class LoopCorrectionPanel(QWidget):
             self.parent_widget.show_current_subtracted_image_contrast_only()
 
 
+    def clear_plot(self):
+        if self.canvas is not None:
+            self.ax.clear()
+            self.canvas.draw()
+
     def replot_current_data(self, *args):
+        if self.canvas is None:
+            return
         if self.parent_widget:
             self.parent_widget.request_loop_update()
 
@@ -1193,6 +1202,8 @@ class LoopCorrectionPanel(QWidget):
         self.replot_current_data()
 
     def on_canvas_resize(self, event):
+        if self.canvas is None:
+            return
         self.canvas.original_resizeEvent(event)
         if self.parent_widget and self.parent_widget.loop_field is not None:
             # Save limits to be restored inside plot_loop
@@ -1202,6 +1213,35 @@ class LoopCorrectionPanel(QWidget):
             self.replot_current_data()
 
     def plot_loop(self, field, intensity, show_title="Hysteresis Loop"):
+        if self.canvas is None:
+            theme = "dark"
+            if self.parent_widget and hasattr(self.parent_widget, 'theme'):
+                theme = self.parent_widget.theme
+            from gui_styles import get_theme_colors
+            colors = get_theme_colors(theme)
+            fig_bg = colors["card"]
+            ax_bg = colors["bg"]
+            
+            self.figure = Figure(figsize=(4, 6), facecolor=fig_bg)
+            self.ax = self.figure.add_subplot(111)
+            self.ax.set_facecolor(ax_bg)
+            self.canvas = FigureCanvas(self.figure)
+            self.canvas.setMinimumHeight(100)
+            
+            # Override the resize event to scale plot elements proportionally
+            self.canvas.original_resizeEvent = self.canvas.resizeEvent
+            self.canvas.resizeEvent = self.on_canvas_resize
+            
+            self.toolbar = NavigationToolbar(self.canvas, self)
+            
+            if hasattr(self, 'placeholder_label') and self.placeholder_label is not None:
+                self.plot_layout.removeWidget(self.placeholder_label)
+                self.placeholder_label.deleteLater()
+                self.placeholder_label = None
+                
+            self.plot_layout.addWidget(self.canvas)
+            self.plot_layout.addWidget(self.toolbar)
+
         self.ax.clear()
         
         # Calculate dynamic scale factor based on canvas widget size relative to baseline (500x400)
@@ -1233,8 +1273,8 @@ class LoopCorrectionPanel(QWidget):
         pub_ticks = self.chk_pub_ticks.isChecked()
         
         # Font settings for publication look
-        plt.rcParams['font.family'] = 'sans-serif'
-        plt.rcParams['font.sans-serif'] = ['Arial', 'Helvetica', 'DejaVu Sans', 'Liberation Sans']
+        mpl.rcParams['font.family'] = 'sans-serif'
+        mpl.rcParams['font.sans-serif'] = ['Arial', 'Helvetica', 'DejaVu Sans', 'Liberation Sans']
         
         # Auto-configure title if requested
         if self.chk_auto_title.isChecked():
@@ -1932,6 +1972,24 @@ class MOKEImageSubtractor(QWidget):
         from gui_styles import apply_theme
         apply_theme(self, self.theme)
 
+    def change_theme(self, theme):
+        self.theme = theme
+        from gui_styles import apply_theme
+        apply_theme(self, theme)
+        if hasattr(self, 'loop_panel') and self.loop_panel is not None:
+            # Update placeholder label style if it exists
+            if hasattr(self.loop_panel, 'placeholder_label') and self.loop_panel.placeholder_label is not None:
+                from gui_styles import get_theme_colors
+                colors = get_theme_colors(theme)
+                ax_bg = colors["bg"]
+                text_color = colors["text"]
+                self.loop_panel.placeholder_label.setStyleSheet(
+                    f"background-color: {ax_bg}; color: {text_color}; border-radius: 6px; "
+                    f"font-size: 14px; font-weight: 500; border: 1px solid {colors['border']};"
+                )
+            if self.loop_field is not None:
+                self.loop_panel.replot_current_data()
+
     def on_roi_shape_changed(self, idx):
         shape = self.cmb_roi_shape.currentText()
         self.lbl_img.set_roi_shape(shape)
@@ -2132,8 +2190,7 @@ class MOKEImageSubtractor(QWidget):
             self.btn_make_loop.setEnabled(False)
             self.loop_field = self.loop_indices = self.loop_intens_txt = self.loop_intens_subtracted = None
             self.mean_index = self.mean_field = None
-            self.loop_panel.ax.clear()
-            self.loop_panel.canvas.draw()
+            self.loop_panel.clear_plot()
             return
         try:
             df = pd.read_csv(txt_file, sep=None, engine='python', comment="#", skip_blank_lines=True)
@@ -2144,8 +2201,7 @@ class MOKEImageSubtractor(QWidget):
                 self.btn_make_loop.setEnabled(False)
                 self.loop_field = self.loop_indices = self.loop_intens_txt = self.loop_intens_subtracted = None
                 self.mean_index = self.mean_field = None
-                self.loop_panel.ax.clear()
-                self.loop_panel.canvas.draw()
+                self.loop_panel.clear_plot()
                 return
             df = df[df[df.columns[2]].str.lower().str.endswith(".png", na=False)]
             self.txt_data = df.rename(
@@ -2188,8 +2244,7 @@ class MOKEImageSubtractor(QWidget):
             self.loop_field = self.loop_indices = self.loop_intens_txt = self.loop_intens_subtracted = None
             self.mean_index = self.mean_field = None
             self.btn_make_loop.setEnabled(False)
-            self.loop_panel.ax.clear()
-            self.loop_panel.canvas.draw()
+            self.loop_panel.clear_plot()
 
     def get_intensity_correction(self, idx_in_txt):
         a = self.loop_panel.coeffs['drift']
@@ -2442,9 +2497,12 @@ class MOKEImageSubtractor(QWidget):
         else:
             normalized = arr_disp.astype(np.float32) / 255.0
             try:
-                cmap = plt.get_cmap(colormap_name)
+                cmap = mpl.colormaps.get_cmap(colormap_name)
             except AttributeError:
-                cmap = plt.cm.get_cmap(colormap_name)
+                try:
+                    cmap = mpl.cm.get_cmap(colormap_name)
+                except AttributeError:
+                    cmap = mpl.cm.gray
             rgba_arr = (cmap(normalized) * 255).astype(np.uint8)
             h, w, c = rgba_arr.shape
             data = rgba_arr.tobytes()
