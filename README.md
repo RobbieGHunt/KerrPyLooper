@@ -22,6 +22,7 @@ This program was made using old, often very manual scripts as the basis and tran
 
 - **Batch Processing of Hysteresis Loops**: Able to explore many sub-directories to process hysteresis loop corrections and output the coercivity and remanence, will automatically plot this as a number of "steps" if folder are labelled in this way.
 
+- **Vector analysis of magnetic domains**: With two datasets corresponding to longitudinal and transverse signals, reconstruct the local magnetization within the field of view allowing for more detailed analysis of domain structures.
 
 - **Field-Dependent Out-of-Plane Focus Correction (Z-Drift)** (your mileage may vary):
   - **Defect ROI Selection**: Automatically selects a $128 \times 128$ pixel static defect region in the zero-field image to perform defocus estimation, ensuring defect boundaries stay in sharp focus.
@@ -70,7 +71,10 @@ Launches a GUI from which you can access the sub-programs:
  - Hit go!
 
 **Vector Analyzer**
- - WIP
+ - Select the directory that contains two directories: "x" for the longitudinal data (along the field direction) and "y" for the transverse data.
+ - View the entire hysteresis loop in vector image format, and export all the images as a gif if desired.
+ - Denoising options to correct for contamination that can cause artifacts in images.
+ - Freely select the region of interest and only consider the vector analysis in this region if desired.
 
 ### 2. Standalone Focus Corrector Script
 To batch-correct out-of-plane focus drift on a raw series from the command line:
