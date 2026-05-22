@@ -440,6 +440,7 @@ class DriftCorrectorWindow(QMainWindow):
 
         # Directory selector
         self.btn_dir = QPushButton("📂  Select Image Directory")
+        self.btn_dir.setObjectName("LaunchButton")
         self.btn_dir.clicked.connect(self._choose_directory)
         left_layout.addWidget(self.btn_dir)
 
@@ -459,6 +460,7 @@ class DriftCorrectorWindow(QMainWindow):
 
         # Reference image selector
         self.btn_set_ref = QPushButton("⚓  Set as Reference Image")
+        self.btn_set_ref.setObjectName("LaunchButton")
         self.btn_set_ref.clicked.connect(self._set_reference)
         self.btn_set_ref.setEnabled(False)
         left_layout.addWidget(self.btn_set_ref)
@@ -477,6 +479,7 @@ class DriftCorrectorWindow(QMainWindow):
         roi_layout.addRow(self.lbl_roi_info)
 
         self.btn_clear_roi = QPushButton("✕  Clear ROI")
+        self.btn_clear_roi.setObjectName("StopButton")
         self.btn_clear_roi.clicked.connect(self._clear_roi)
         roi_layout.addRow(self.btn_clear_roi)
 
@@ -488,7 +491,8 @@ class DriftCorrectorWindow(QMainWindow):
 
         sw_hbox = QHBoxLayout()
         self.sld_search = QSlider(Qt.Horizontal)
-        self.sld_search.setRange(1, 100)
+        self.sld_search.setMinimum(1)
+        self.sld_search.setMaximum(100)
         self.sld_search.setValue(20)
         self.sld_search.valueChanged.connect(self._sync_search_spin)
         self.spin_search = QSpinBox()
@@ -515,7 +519,8 @@ class DriftCorrectorWindow(QMainWindow):
 
         c_hbox = QHBoxLayout()
         self.sld_contrast = QSlider(Qt.Horizontal)
-        self.sld_contrast.setRange(10, 400)
+        self.sld_contrast.setMinimum(10)
+        self.sld_contrast.setMaximum(400)
         self.sld_contrast.setValue(100)
         self.sld_contrast.valueChanged.connect(self._contrast_slider_changed)
         self.spin_contrast = QDoubleSpinBox()
@@ -536,16 +541,19 @@ class DriftCorrectorWindow(QMainWindow):
 
         # Action buttons
         self.btn_estimate = QPushButton("🔍  Estimate Drift")
+        self.btn_estimate.setObjectName("LaunchButton")
         self.btn_estimate.clicked.connect(self._run_estimation)
         self.btn_estimate.setEnabled(False)
         left_layout.addWidget(self.btn_estimate)
 
         self.btn_abort = QPushButton("⏹  Abort")
+        self.btn_abort.setObjectName("StopButton")
         self.btn_abort.clicked.connect(self._abort_estimation)
         self.btn_abort.setEnabled(False)
         left_layout.addWidget(self.btn_abort)
 
         self.btn_save = QPushButton("💾  Save Corrected Images")
+        self.btn_save.setObjectName("LaunchButton")
         self.btn_save.clicked.connect(self._save_corrected)
         self.btn_save.setEnabled(False)
         left_layout.addWidget(self.btn_save)
@@ -628,7 +636,8 @@ class DriftCorrectorWindow(QMainWindow):
         
         hx = QHBoxLayout()
         self.sld_man_x = QSlider(Qt.Horizontal)
-        self.sld_man_x.setRange(-40, 40)
+        self.sld_man_x.setMinimum(-40)
+        self.sld_man_x.setMaximum(40)
         self.sld_man_x.setValue(0)
         self.spin_man_x = QSpinBox()
         self.spin_man_x.setRange(-40, 40)
@@ -642,7 +651,8 @@ class DriftCorrectorWindow(QMainWindow):
         
         hy = QHBoxLayout()
         self.sld_man_y = QSlider(Qt.Horizontal)
-        self.sld_man_y.setRange(-40, 40)
+        self.sld_man_y.setMinimum(-40)
+        self.sld_man_y.setMaximum(40)
         self.sld_man_y.setValue(0)
         self.spin_man_y = QSpinBox()
         self.spin_man_y.setRange(-40, 40)
@@ -985,7 +995,8 @@ class DriftCorrectorWindow(QMainWindow):
 
         if self.image_files:
             self.btn_set_ref.setEnabled(True)
-            self.slider_images.setRange(0, len(self.image_files) - 1)
+            self.slider_images.setMinimum(0)
+            self.slider_images.setMaximum(len(self.image_files) - 1)
             self.slider_images.setValue(0)
             self.slider_images.setEnabled(True)
             self.btn_prev.setEnabled(True)
