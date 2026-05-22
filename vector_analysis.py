@@ -558,9 +558,9 @@ class VectorAnalysisGUI(QWidget):
         tab_full_layout = QVBoxLayout(tab_full)
         tab_full_layout.setContentsMargins(0, 0, 0, 0)
         
-        lbl_guide = QLabel("ℹ️ Drag a box on the left image to select a cropping region of interest.")
-        lbl_guide.setStyleSheet("font-size: 16px; color: black; padding-bottom: 2px;")
-        tab_full_layout.addWidget(lbl_guide)
+        self.lbl_guide = QLabel("ℹ️ Drag a box on the left image to select a cropping region of interest.")
+        self.lbl_guide.setStyleSheet("font-size: 16px; padding-bottom: 2px;")
+        tab_full_layout.addWidget(self.lbl_guide)
         tab_full_layout.addLayout(create_slider_layout())
         
         self.fig_full = plt.figure(figsize=(10, 6), tight_layout=True)
@@ -660,30 +660,30 @@ class VectorAnalysisGUI(QWidget):
             font-size: 23px;
         }}
         """
-        tab_qss = """
-        QTabBar {
+        tab_qss = f"""
+        QTabBar {{
             spacing: 0px;
-        }
-        QTabBar::tab {
-            background-color: white;
-            color: black;
-            border: 1px solid #3f3f46;
+        }}
+        QTabBar::tab {{
+            background-color: {colors['card']};
+            color: {colors['text']};
+            border: 1px solid {colors['border']};
             border-bottom: none;
             border-top-left-radius: 4px;
             border-top-right-radius: 4px;
             padding: 8px 16px;
             margin-left: 0px;
             margin-right: -1px;
-        }
-        QTabBar::tab:selected {
-            background-color: #e4e4e7;
-            color: black;
-            border-color: #6366f1;
-        }
-        QTabBar::tab:hover {
-            background-color: #f4f4f5;
-            color: black;
-        }
+        }}
+        QTabBar::tab:selected {{
+            background-color: {colors['bg']};
+            color: {colors['text']};
+            border-color: {colors['accent']};
+        }}
+        QTabBar::tab:hover {{
+            background-color: {colors['btn_hover']};
+            color: {colors['text']};
+        }}
         """
         
         slider_qss = f"""
@@ -743,6 +743,12 @@ class VectorAnalysisGUI(QWidget):
             
         for s in self.sliders:
             s.setStyleSheet(slider_qss)
+
+        for lbl in self.lbl_sliders:
+            lbl.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {colors['text']};")
+
+        if hasattr(self, 'lbl_guide'):
+            self.lbl_guide.setStyleSheet(f"font-size: 16px; color: {colors['text']}; padding-bottom: 2px;")
 
     def change_theme(self, theme):
         self.theme = theme
