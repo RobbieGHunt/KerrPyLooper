@@ -54,6 +54,8 @@ Launch the interactive MOKE Loop Subtractor tool:
 ```bash
 python suite_launcher.py
 ```
+...or launch from the IDE of your choice. 
+
 Launches a GUI from which you can access the sub-programs:
 
 **Kerr Looper**
