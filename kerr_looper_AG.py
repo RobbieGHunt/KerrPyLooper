@@ -2220,6 +2220,11 @@ class MOKEImageSubtractor(QWidget):
             self.loop_panel.update_correction_ranges(ptp_val)
             
             self.btn_make_loop.setEnabled(True)
+
+            # Filter image_files to only those listed in the .txt file
+            valid_files = set(self.txt_data["File"].str.strip().tolist())
+            self.image_files = [f for f in self.image_files if f in valid_files]
+
             self.request_loop_update()
             
             # Update list widgets with the newly loaded field values

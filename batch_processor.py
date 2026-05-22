@@ -620,6 +620,11 @@ def process_directory(data_dir: str, analysis_dir: str,
         f for f in os.listdir(data_dir)
         if f.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"))
     ])
+
+    # Filter image_files to only those listed in the .txt file
+    valid_files = set(txt_df["File"].str.strip().tolist())
+    image_files = [f for f in image_files if f in valid_files]
+
     if not image_files:
         print_func(f"  [skip] No image files found.")
         return None
