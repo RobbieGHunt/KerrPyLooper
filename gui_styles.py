@@ -315,7 +315,18 @@ QCheckBox::indicator:hover {{
 QCheckBox::indicator:checked {{
     background-color: {accent};
     border: 1px solid {accent};
-    image: url(data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>);
+    image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><polyline points='20 6 9 17 4 12'></polyline></svg>");
+}}
+
+QCheckBox::indicator:checked:disabled {{
+    background-color: {border};
+    border: 1px solid {border};
+    image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='gray' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><polyline points='20 6 9 17 4 12'></polyline></svg>");
+}}
+
+QCheckBox::indicator:disabled {{
+    background-color: {bg};
+    border: 1px solid {border};
 }}
 
 /* CONSOLE LOG */
@@ -388,7 +399,7 @@ def get_theme_colors(theme_name="dark"):
 
 def apply_theme(widget_or_app, theme_name="dark"):
     """
-    Formmats the base QSS template with target theme colors and applies it.
+    Formats the base QSS template with target theme colors and applies it.
     """
     palette = get_theme_colors(theme_name)
     qss = BASE_QSS_TEMPLATE.format(**palette)
