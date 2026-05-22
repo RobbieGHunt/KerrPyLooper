@@ -16,3 +16,6 @@ defect_patch_*.png
 # Intermediate/Old Python scripts (minimal repo)
 kerr_looper_v2.py
 kerr_looper.py
+
+example1/data/
+example1/Analysis/
