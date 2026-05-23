@@ -67,46 +67,12 @@ def load_txt_data(data_dir: str, print_func=print):
     if not txt_files:
         return None
 
-    import pandas as pd
-    
     for fn in txt_files:
         txt_file = os.path.join(data_dir, fn)
         try:
-            # Skip empty files
-            if os.path.getsize(txt_file) == 0:
-                continue
-                
-            # Quick check: a valid data file must reference ".png" files
-            with open(txt_file, 'r', encoding='utf-8', errors='ignore') as f:
-                head = f.read(1024 * 1024)  # Read up to 1MB
-            if ".png" not in head.lower():
-                continue
-
-            # Attempt to read as structured data
-            df = pd.read_csv(txt_file, sep=None, engine="python",
-                             comment="#", skip_blank_lines=True)
-            df.columns = [str(c).strip() for c in df.columns]
-            
-            if len(df.columns) < 3:
-                continue
-                
-            # Check if the third column has ".png" indicating it's the correct file
-            df_filtered = df[df[df.columns[2]].astype(str).str.strip().str.lower().str.endswith(".png", na=False)]
-            
-            if len(df_filtered) >= 3:
-                # We found the valid data file
-                df = df_filtered.rename(columns={
-                    df.columns[0]: "Field",
-                    df.columns[1]: "Intensity",
-                    df.columns[2]: "File",
-                }).reset_index(drop=True)
-                df["Field"] = pd.to_numeric(df["Field"], errors="coerce")
-                df["Intensity"] = pd.to_numeric(df["Intensity"], errors="coerce")
-                df = df.dropna(subset=["Field", "Intensity"])
-                
-                if len(df) >= 3:
-                    return df
-                    
+            df = _parse_txt_file(txt_file)
+            if df is not None:
+                return df
         except Exception as exc:
             print_func(f"  [warn] Could not parse {txt_file}: {exc}")
             continue
@@ -741,6 +707,167 @@ def process_directory_worker(args):
             pass
 
 
+
+def _run_batch_processes(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, max_workers, cancel_event, thread_ref, results, total_dirs):
+    import multiprocessing
+    import time
+
+    # Prepare arguments (cancel_event is None for processes, we use pool.terminate())
+    tasks = [
+        (d, analysis_dir, drift_corr, linear_corr, quad_corr, None)
+        for d in sub_dirs
+    ]
+
+    num_procs = max_workers if max_workers else max(1, multiprocessing.cpu_count() - 1)
+    print(f"\n[info] Spinning up background processes... (This usually takes 5-10 seconds on Windows)")
+    print(f"Starting Process Pool with {num_procs} workers...")
+
+    pool = multiprocessing.Pool(processes=num_procs)
+    if thread_ref is not None:
+        thread_ref.active_pool = pool
+
+    try:
+        pending = []
+        for i, task in enumerate(tasks):
+            dir_name = os.path.basename(task[0])
+            print(f"[{i+1}/{total_dirs}] Queued: {dir_name}")
+            res = pool.apply_async(process_directory_worker, (task,))
+            pending.append((dir_name, res))
+
+        completed = 0
+        running_reported = set()
+        while pending:
+            if cancel_event is not None and cancel_event.is_set():
+                print("\n[info] Cancellation detected in run_batch. Terminating process pool...")
+                pool.terminate()
+                pool.join()
+                return
+
+            # Poll status files to provide immediate feedback for Multi-processed mode
+            for dir_name, _ in pending:
+                if dir_name not in running_reported:
+                    status_file = os.path.join(analysis_dir, f".status_{dir_name}.running")
+                    if os.path.exists(status_file):
+                        print(f"  -> Started processing: {dir_name}")
+                        running_reported.add(dir_name)
+
+            still_pending = []
+            for dir_name, res in pending:
+                if res.ready():
+                    completed += 1
+                    try:
+                        result, log_lines, err_str = res.get()
+                        print(f"\n--- Log for {dir_name} [{completed}/{total_dirs}] ---")
+                        for line in log_lines:
+                            print(line)
+                        if err_str:
+                            print(f"[ERROR] {err_str}")
+                        if result is not None:
+                            results.append(result)
+                    except Exception as exc:
+                        print(f"\n[ERROR] Task for {dir_name} raised exception: {exc}")
+                else:
+                    still_pending.append((dir_name, res))
+            pending = still_pending
+            time.sleep(0.1)
+
+        pool.close()
+        pool.join()
+    except Exception as e:
+        pool.terminate()
+        pool.join()
+        raise e
+
+
+
+def _run_batch_threads(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, max_workers, cancel_event, thread_ref, results, total_dirs):
+    import concurrent.futures
+    import time
+
+    tasks = [
+        (d, analysis_dir, drift_corr, linear_corr, quad_corr, cancel_event)
+        for d in sub_dirs
+    ]
+
+    num_threads = max_workers if max_workers else max(1, os.cpu_count() - 1)
+    print(f"Starting Thread Pool with {num_threads} workers...")
+
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_threads)
+    if thread_ref is not None:
+        thread_ref.active_executor = executor
+
+    try:
+        futures = {}
+        for i, task in enumerate(tasks):
+            dir_name = os.path.basename(task[0])
+            print(f"[{i+1}/{total_dirs}] Queued: {dir_name}")
+            f = executor.submit(process_directory_worker, task)
+            futures[f] = dir_name
+
+        completed = 0
+        pending = set(futures.keys())
+        running_reported = set()
+
+        while pending:
+            if cancel_event is not None and cancel_event.is_set():
+                print("\n[info] Cancellation detected. Shutting down thread pool...")
+                executor.shutdown(wait=False, cancel_futures=True)
+                return
+
+            # Check for tasks that just started running to provide immediate visual feedback
+            for f in pending:
+                if f.running() and futures[f] not in running_reported:
+                    print(f"  -> Started processing: {futures[f]}")
+                    running_reported.add(futures[f])
+
+            # Wait for any task to finish, up to 0.2 seconds
+            done, pending = concurrent.futures.wait(
+                pending, timeout=0.2, return_when=concurrent.futures.FIRST_COMPLETED
+            )
+
+            for f in done:
+                dir_name = futures[f]
+                completed += 1
+                try:
+                    result, log_lines, err_str = f.result()
+                    print(f"\n--- Log for {dir_name} [{completed}/{total_dirs}] ---")
+                    for line in log_lines:
+                        print(line)
+                    if err_str:
+                        print(f"[ERROR] {err_str}")
+                    if result is not None:
+                        results.append(result)
+                except Exception as exc:
+                    print(f"\n[ERROR] Task for {dir_name} raised exception: {exc}")
+
+        executor.shutdown(wait=True)
+    except Exception as e:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise e
+
+
+
+def _run_batch_sequential(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, cancel_event, results, total_dirs):
+    print("Starting Sequential execution...")
+    for i, data_dir in enumerate(sub_dirs):
+        if cancel_event is not None and cancel_event.is_set():
+            print("\n[info] Cancellation detected. Halting sequential batch...")
+            return
+        dir_name = os.path.basename(data_dir)
+        print(f"[{i+1}/{total_dirs}] Processing: {dir_name}")
+
+        task = (data_dir, analysis_dir, drift_corr, linear_corr, quad_corr, cancel_event)
+        result, log_lines, err_str = process_directory_worker(task)
+
+        print(f"\n--- Log for {dir_name} [{i+1}/{total_dirs}] ---")
+        for line in log_lines:
+            print(line)
+        if err_str:
+            print(f"[ERROR] {err_str}")
+        if result is not None:
+            results.append(result)
+
+
 def run_batch(parent_dir: str, drift_corr: bool = True, linear_corr: bool = True,
               quad_corr: bool = True, mode="processes", max_workers=None,
               cancel_event=None, thread_ref=None):
@@ -778,157 +905,11 @@ def run_batch(parent_dir: str, drift_corr: bool = True, linear_corr: bool = True
     start_time = time.time()
 
     if mode == "processes":
-        import multiprocessing
-        
-        # Prepare arguments (cancel_event is None for processes, we use pool.terminate())
-        tasks = [
-            (d, analysis_dir, drift_corr, linear_corr, quad_corr, None)
-            for d in sub_dirs
-        ]
-        
-        num_procs = max_workers if max_workers else max(1, multiprocessing.cpu_count() - 1)
-        print(f"\n[info] Spinning up background processes... (This usually takes 5-10 seconds on Windows)")
-        print(f"Starting Process Pool with {num_procs} workers...")
-        
-        pool = multiprocessing.Pool(processes=num_procs)
-        if thread_ref is not None:
-            thread_ref.active_pool = pool
-            
-        try:
-            pending = []
-            for i, task in enumerate(tasks):
-                dir_name = os.path.basename(task[0])
-                print(f"[{i+1}/{total_dirs}] Queued: {dir_name}")
-                res = pool.apply_async(process_directory_worker, (task,))
-                pending.append((dir_name, res))
-                
-            completed = 0
-            running_reported = set()
-            while pending:
-                if cancel_event is not None and cancel_event.is_set():
-                    print("\n[info] Cancellation detected in run_batch. Terminating process pool...")
-                    pool.terminate()
-                    pool.join()
-                    return
-                    
-                # Poll status files to provide immediate feedback for Multi-processed mode
-                for dir_name, _ in pending:
-                    if dir_name not in running_reported:
-                        status_file = os.path.join(analysis_dir, f".status_{dir_name}.running")
-                        if os.path.exists(status_file):
-                            print(f"  -> Started processing: {dir_name}")
-                            running_reported.add(dir_name)
-                            
-                still_pending = []
-                for dir_name, res in pending:
-                    if res.ready():
-                        completed += 1
-                        try:
-                            result, log_lines, err_str = res.get()
-                            print(f"\n--- Log for {dir_name} [{completed}/{total_dirs}] ---")
-                            for line in log_lines:
-                                print(line)
-                            if err_str:
-                                print(f"[ERROR] {err_str}")
-                            if result is not None:
-                                results.append(result)
-                        except Exception as exc:
-                            print(f"\n[ERROR] Task for {dir_name} raised exception: {exc}")
-                    else:
-                        still_pending.append((dir_name, res))
-                pending = still_pending
-                time.sleep(0.1)
-                
-            pool.close()
-            pool.join()
-        except Exception as e:
-            pool.terminate()
-            pool.join()
-            raise e
-            
+        _run_batch_processes(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, max_workers, cancel_event, thread_ref, results, total_dirs)
     elif mode == "threads":
-        import concurrent.futures
-        
-        tasks = [
-            (d, analysis_dir, drift_corr, linear_corr, quad_corr, cancel_event)
-            for d in sub_dirs
-        ]
-        
-        num_threads = max_workers if max_workers else max(1, os.cpu_count() - 1)
-        print(f"Starting Thread Pool with {num_threads} workers...")
-        
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=num_threads)
-        if thread_ref is not None:
-            thread_ref.active_executor = executor
-            
-        try:
-            futures = {}
-            for i, task in enumerate(tasks):
-                dir_name = os.path.basename(task[0])
-                print(f"[{i+1}/{total_dirs}] Queued: {dir_name}")
-                f = executor.submit(process_directory_worker, task)
-                futures[f] = dir_name
-                
-            completed = 0
-            pending = set(futures.keys())
-            running_reported = set()
-
-            while pending:
-                if cancel_event is not None and cancel_event.is_set():
-                    print("\n[info] Cancellation detected. Shutting down thread pool...")
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    return
-                
-                # Check for tasks that just started running to provide immediate visual feedback
-                for f in pending:
-                    if f.running() and futures[f] not in running_reported:
-                        print(f"  -> Started processing: {futures[f]}")
-                        running_reported.add(futures[f])
-
-                # Wait for any task to finish, up to 0.2 seconds
-                done, pending = concurrent.futures.wait(
-                    pending, timeout=0.2, return_when=concurrent.futures.FIRST_COMPLETED
-                )
-                
-                for f in done:
-                    dir_name = futures[f]
-                    completed += 1
-                    try:
-                        result, log_lines, err_str = f.result()
-                        print(f"\n--- Log for {dir_name} [{completed}/{total_dirs}] ---")
-                        for line in log_lines:
-                            print(line)
-                        if err_str:
-                            print(f"[ERROR] {err_str}")
-                        if result is not None:
-                            results.append(result)
-                    except Exception as exc:
-                        print(f"\n[ERROR] Task for {dir_name} raised exception: {exc}")
-            
-            executor.shutdown(wait=True)
-        except Exception as e:
-            executor.shutdown(wait=False, cancel_futures=True)
-            raise e
-            
+        _run_batch_threads(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, max_workers, cancel_event, thread_ref, results, total_dirs)
     else:  # sequential mode
-        print("Starting Sequential execution...")
-        for i, data_dir in enumerate(sub_dirs):
-            if cancel_event is not None and cancel_event.is_set():
-                print("\n[info] Cancellation detected. Halting sequential batch...")
-                return
-            dir_name = os.path.basename(data_dir)
-            print(f"[{i+1}/{total_dirs}] Processing: {dir_name}")
-            
-            task = (data_dir, analysis_dir, drift_corr, linear_corr, quad_corr, cancel_event)
-            result, log_lines, err_str = process_directory_worker(task)
-            
-            print(f"\n--- Log for {dir_name} [{i+1}/{total_dirs}] ---")
-            for line in log_lines:
-                print(line)
-            if err_str:
-                print(f"[ERROR] {err_str}")
-            if result is not None:
-                results.append(result)
+        _run_batch_sequential(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, cancel_event, results, total_dirs)
 
     elapsed_total = time.time() - start_time
     print(f"\nAll processing tasks completed in {elapsed_total:.2f} seconds.")

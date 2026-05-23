@@ -72,17 +72,6 @@ except ImportError:
 
 
 
-def get_percentile_limits(arr):
-    mask = arr > 0
-    if np.any(mask):
-        active = arr[mask]
-        low = np.percentile(active, 1)
-        high = np.percentile(active, 99)
-        if high > low:
-            return low, high
-    return arr.min(), arr.max()
-
-
 def load_image_to_float32(path):
     with Image.open(path) as img:
         if img.mode in ('L', 'I;16', 'I'):
