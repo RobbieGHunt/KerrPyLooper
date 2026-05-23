@@ -581,6 +581,7 @@ class SuiteLauncherWindow(QMainWindow):
         self.btn_stop.setObjectName("StopButton")
         self.btn_stop.setCursor(Qt.PointingHandCursor)
         self.btn_stop.setEnabled(False)
+        self.btn_stop.setToolTip("No process is currently running")
         self.btn_stop.clicked.connect(self.stop_process)
         console_header.addWidget(self.btn_stop)
         
@@ -835,6 +836,7 @@ class SuiteLauncherWindow(QMainWindow):
         # Update UI state
         self.status_lbl.setText(f"Status: Running {tool_config['name']}...")
         self.btn_stop.setEnabled(True)
+        self.btn_stop.setToolTip("Stop the currently running process")
         self.progress_bar.setRange(0, 0)  # Pulse style progress
         self.progress_bar.setVisible(True)
         
@@ -852,6 +854,7 @@ class SuiteLauncherWindow(QMainWindow):
     def process_finished(self, exit_code, exit_status):
         """Triggered when the process terminates."""
         self.btn_stop.setEnabled(False)
+        self.btn_stop.setToolTip("No process is currently running")
         self.progress_bar.setVisible(False)
         
         if exit_status == QProcess.NormalExit and exit_code == 0:

@@ -1859,10 +1859,12 @@ class MOKEImageSubtractor(QWidget):
         self.btn_save = QPushButton("Save This Subtraction Result")
         self.btn_save.clicked.connect(self.save_current_result)
         self.btn_save.setEnabled(False)
+        self.btn_save.setToolTip("Set a background image and select an image to subtract first")
         left_layout.addWidget(self.btn_save)
         self.btn_make_loop = QPushButton("Make Loop (Plot Hysteresis)")
         self.btn_make_loop.clicked.connect(self.run_subtraction_loop)
         self.btn_make_loop.setEnabled(False)
+        self.btn_make_loop.setToolTip("Load a directory with a mapping .txt file first to make a loop")
         left_layout.addWidget(self.btn_make_loop)
         # Horizontal layout for preview and ROI tools
         hbox_img_roi = QHBoxLayout()
@@ -2134,6 +2136,9 @@ class MOKEImageSubtractor(QWidget):
             self.background_array = None
             self.txt_data = None
             self.btn_make_loop.setEnabled(False)
+            self.btn_make_loop.setToolTip("Load a directory with a mapping .txt file first to make a loop")
+            self.btn_save.setEnabled(False)
+            self.btn_save.setToolTip("Set a background image and select an image to subtract first")
             self.loop_field = None
             self.loop_indices = None
             self.loop_intens_txt = None
@@ -2188,6 +2193,7 @@ class MOKEImageSubtractor(QWidget):
         if not txt_file:
             self.txt_data = None
             self.btn_make_loop.setEnabled(False)
+            self.btn_make_loop.setToolTip("Load a directory with a mapping .txt file first to make a loop")
             self.loop_field = self.loop_indices = self.loop_intens_txt = self.loop_intens_subtracted = None
             self.mean_index = self.mean_field = None
             self.loop_panel.clear_plot()
@@ -2199,6 +2205,7 @@ class MOKEImageSubtractor(QWidget):
                 QMessageBox.critical(self, "Error", f"Text file {os.path.basename(txt_file)} missing columns.")
                 self.txt_data = None
                 self.btn_make_loop.setEnabled(False)
+                self.btn_make_loop.setToolTip("Load a directory with a mapping .txt file first to make a loop")
                 self.loop_field = self.loop_indices = self.loop_intens_txt = self.loop_intens_subtracted = None
                 self.mean_index = self.mean_field = None
                 self.loop_panel.clear_plot()
@@ -2220,6 +2227,7 @@ class MOKEImageSubtractor(QWidget):
             self.loop_panel.update_correction_ranges(ptp_val)
             
             self.btn_make_loop.setEnabled(True)
+            self.btn_make_loop.setToolTip("Calculate and plot the hysteresis loop")
 
             # Filter image_files to only those listed in the .txt file
             valid_files = set(self.txt_data["File"].str.strip().tolist())
@@ -2249,6 +2257,7 @@ class MOKEImageSubtractor(QWidget):
             self.loop_field = self.loop_indices = self.loop_intens_txt = self.loop_intens_subtracted = None
             self.mean_index = self.mean_field = None
             self.btn_make_loop.setEnabled(False)
+            self.btn_make_loop.setToolTip("Load a directory with a mapping .txt file first to make a loop")
             self.loop_panel.clear_plot()
 
     def get_intensity_correction(self, idx_in_txt):
@@ -2376,6 +2385,7 @@ class MOKEImageSubtractor(QWidget):
         self.update_select_bg_label(bg_file, is_set=True)
         self.update_list_widget_items(self.list_results, self.image_files)
         self.btn_save.setEnabled(True)
+        self.btn_save.setToolTip("Save the currently displayed subtracted image")
         
         # If there is a current selection in list_results, refresh it!
         res_idx = self.list_results.currentRow()
@@ -2419,7 +2429,8 @@ class MOKEImageSubtractor(QWidget):
                 self.current_difference_img = Image.fromarray(arr_disp) if (img_arr.ndim != 3 or img_arr.shape[2] not in [3, 4]) else Image.fromarray(img_arr)
                 self.current_image_idx = idx
                 self.current_image_file = img_file
-                self.btn_save.setEnabled(False)  # Save is disabled for raw image preview
+                self.btn_save.setEnabled(False)
+                self.btn_save.setToolTip("Set a background image and select an image to subtract first")  # Save is disabled for raw image preview
             except Exception as e:
                 self.lbl_img.setText(f"Error: {e}")
                 self.current_difference_img = None
@@ -2484,7 +2495,8 @@ class MOKEImageSubtractor(QWidget):
             
             self.show_current_subtracted_image_contrast_only()
             self.current_result_filename = f"{os.path.splitext(img_file)[0]}_contrast.png"
-            self.btn_save.setEnabled(True)  # Enable save for subtracted image
+            self.btn_save.setEnabled(True)
+            self.btn_save.setToolTip("Save the currently displayed subtracted image")  # Enable save for subtracted image
         except Exception as e:
             self.lbl_img.setText(f"Error: {e}")
             self.current_difference_img = None
