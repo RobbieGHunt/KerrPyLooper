@@ -28,6 +28,7 @@ import re
 import argparse
 import datetime
 import time
+from shared_utils.image_processing import crop_batch, compute_subtracted_mean
 import threading
 
 import numpy as np
@@ -53,60 +54,6 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Utility helpers (mirror of kerr_looper_AG.py, no GUI dependency)
 # ---------------------------------------------------------------------------
-
-def crop600(arr: np.ndarray) -> np.ndarray:
-    """Crop array to at most 600 rows (matches GUI behaviour)."""
-    if arr.shape[0] <= 600:
-        return arr
-    if arr.ndim == 3:
-        return arr[:600, :, :]
-    return arr[:600, :]
-
-
-def _parse_txt_file(txt_file: str) -> "pd.DataFrame | None":
-    """
-    Attempt to read and parse a single text file into a structured DataFrame.
-    Returns the formatted DataFrame if valid, otherwise None.
-    """
-    import pandas as pd
-
-    # Skip empty files
-    if os.path.getsize(txt_file) == 0:
-        return None
-
-    # Quick check: a valid data file must reference ".png" files
-    with open(txt_file, 'r', encoding='utf-8', errors='ignore') as f:
-        head = f.read(1024 * 1024)  # Read up to 1MB
-    if ".png" not in head.lower():
-        return None
-
-    # Attempt to read as structured data
-    df = pd.read_csv(txt_file, sep=None, engine="python",
-                     comment="#", skip_blank_lines=True)
-    df.columns = [str(c).strip() for c in df.columns]
-
-    if len(df.columns) < 3:
-        return None
-
-    # Check if the third column has ".png" indicating it's the correct file
-    df_filtered = df[df[df.columns[2]].astype(str).str.strip().str.lower().str.endswith(".png", na=False)]
-
-    if len(df_filtered) >= 3:
-        # We found the valid data file
-        df = df_filtered.rename(columns={
-            df.columns[0]: "Field",
-            df.columns[1]: "Intensity",
-            df.columns[2]: "File",
-        }).reset_index(drop=True)
-        df["Field"] = pd.to_numeric(df["Field"], errors="coerce")
-        df["Intensity"] = pd.to_numeric(df["Intensity"], errors="coerce")
-        df = df.dropna(subset=["Field", "Intensity"])
-
-        if len(df) >= 3:
-            return df
-
-    return None
-
 
 def load_txt_data(data_dir: str, print_func=print):
     """
@@ -157,7 +104,7 @@ def run_subtraction_loop(data_dir: str, txt_df: "pd.DataFrame",
 
     # ⚡ Bolt: Pre-crop and cast the background array to float32
     # This avoids O(N) redundant memory allocations and conversions inside the loop.
-    bg_cropped_f32 = crop600(background_array).astype(np.float32)
+    bg_cropped_f32 = crop_batch(background_array).astype(np.float32)
 
     for row in txt_df.itertuples(index=False):
         if cancel_event is not None and cancel_event.is_set():
@@ -169,19 +116,8 @@ def run_subtraction_loop(data_dir: str, txt_df: "pd.DataFrame",
             continue
         try:
             img_arr = np.array(Image.open(img_path))
-            img_arr = crop600(img_arr)
-
-            min_shape = tuple(min(sa, sb)
-                              for sa, sb in zip(img_arr.shape, bg_cropped_f32.shape))
-            if img_arr.ndim == 3:
-                img_c = img_arr[:min_shape[0], :min_shape[1], :min_shape[2]]
-                bg_c  = bg_cropped_f32[:min_shape[0], :min_shape[1], :min_shape[2]]
-            else:
-                img_c = img_arr[:min_shape[0], :min_shape[1]]
-                bg_c  = bg_cropped_f32[:min_shape[0], :min_shape[1]]
-
-            diff = img_c.astype(np.float32) - bg_c
-            means.append(float(np.mean(diff)))
+            mean_val = compute_subtracted_mean(img_arr, bg_cropped_f32, crop_func=crop_batch)
+            means.append(mean_val)
         except Exception as exc:
             print_func(f"  [warn] Error processing {img_file}: {exc}")
             means.append(np.nan)
