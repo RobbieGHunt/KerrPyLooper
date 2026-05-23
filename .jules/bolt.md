@@ -5,3 +5,6 @@
 ## 2024-05-22 - Fast Matplotlib Frame Extraction
 **Learning:** Inside a loop (like `make_movie`), using `savefig` with a `BytesIO` buffer adds massive overhead from PNG encoding/decoding.
 **Action:** Use `fig.canvas.draw()` followed by `fig.canvas.buffer_rgba()` and `Image.frombuffer()` for a 2-3x speedup when extracting raw frames from Matplotlib.
+
+## Iterating Pandas DataFrames
+When iterating over Pandas DataFrames in performance-sensitive sections, prefer `enumerate(df.itertuples(index=False))` over `df.iterrows()`. Using `itertuples` returns namedtuples instead of constructing Pandas Series for every row, making it significantly faster (e.g. from 0.5s to 0.02s for 10000 rows). Also be sure to change `row['Column']` syntax to `row.Column`.
