@@ -149,8 +149,8 @@ def focus_correct_series(img_dir, txt_path, output_dir, balance=0.02):
     filenames = []
     
     print("\nEstimating defocus parameters across the series...")
-    for idx, row in df.iterrows():
-        fname = row["File"].strip()
+    for idx, row in enumerate(df.itertuples(index=False)):
+        fname = row.File.strip()
         fpath = os.path.join(img_dir, fname)
         target_img_raw = np.array(Image.open(fpath))
         if target_img_raw.ndim == 3:
@@ -163,11 +163,11 @@ def focus_correct_series(img_dir, txt_path, output_dir, balance=0.02):
         
         sigma_est = estimate_defocus(ref_patch_norm, target_patch_norm)
         sigmas.append(sigma_est)
-        fields.append(row["Field"])
+        fields.append(row.Field)
         filenames.append(fname)
         
         if idx % 10 == 0 or idx == len(df) - 1:
-            print(f"  Processed {idx+1}/{len(df)}: {fname} (Field: {row['Field']:8.2f} mT) -> Defocus Sigma: {sigma_est:.4f}")
+            print(f"  Processed {idx+1}/{len(df)}: {fname} (Field: {row.Field:8.2f} mT) -> Defocus Sigma: {sigma_est:.4f}")
             
     # Fit quadratic model to defocus curve
     fields = np.array(fields)
@@ -195,7 +195,7 @@ def focus_correct_series(img_dir, txt_path, output_dir, balance=0.02):
     
     # Correct and save the images
     print("\nApplying focus correction (deblurring target images)...")
-    for idx, row in df.iterrows():
+    for idx, row in enumerate(df.itertuples(index=False)):
         fname = filenames[idx]
         fpath = os.path.join(img_dir, fname)
         target_img_pil = Image.open(fpath)
