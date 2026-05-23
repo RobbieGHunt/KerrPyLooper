@@ -40,7 +40,7 @@ from PyQt5.QtWidgets import (
     QSizePolicy, QDialog, QDialogButtonBox
 )
 from PyQt5.QtCore import Qt, QSize
-from PyQt5.QtGui import QColor, QFont
+from PyQt5.QtGui import QFont
 
 # Safe imports for theme styles
 try:
