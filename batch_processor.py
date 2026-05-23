@@ -143,6 +143,11 @@ def run_subtraction_loop(data_dir: str, txt_df: "pd.DataFrame",
     the mean intensity of the difference as a 1-D float32 array.
     """
     means = []
+
+    # ⚡ Bolt: Pre-crop and cast the background array to float32
+    # This avoids O(N) redundant memory allocations and conversions inside the loop.
+    bg_cropped_f32 = crop600(background_array).astype(np.float32)
+
     for row in txt_df.itertuples(index=False):
         if cancel_event is not None and cancel_event.is_set():
             raise InterruptedError("Batch run cancelled by user")
@@ -153,18 +158,18 @@ def run_subtraction_loop(data_dir: str, txt_df: "pd.DataFrame",
             continue
         try:
             img_arr = np.array(Image.open(img_path))
-            bg_arr  = background_array.copy()
             img_arr = crop600(img_arr)
-            bg_arr  = crop600(bg_arr)
+
             min_shape = tuple(min(sa, sb)
-                              for sa, sb in zip(img_arr.shape, bg_arr.shape))
+                              for sa, sb in zip(img_arr.shape, bg_cropped_f32.shape))
             if img_arr.ndim == 3:
                 img_c = img_arr[:min_shape[0], :min_shape[1], :min_shape[2]]
-                bg_c  =  bg_arr[:min_shape[0], :min_shape[1], :min_shape[2]]
+                bg_c  = bg_cropped_f32[:min_shape[0], :min_shape[1], :min_shape[2]]
             else:
                 img_c = img_arr[:min_shape[0], :min_shape[1]]
-                bg_c  =  bg_arr[:min_shape[0], :min_shape[1]]
-            diff = img_c.astype(np.float32) - bg_c.astype(np.float32)
+                bg_c  = bg_cropped_f32[:min_shape[0], :min_shape[1]]
+
+            diff = img_c.astype(np.float32) - bg_c
             means.append(float(np.mean(diff)))
         except Exception as exc:
             print_func(f"  [warn] Error processing {img_file}: {exc}")
