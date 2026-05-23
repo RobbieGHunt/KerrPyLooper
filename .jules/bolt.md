@@ -8,3 +8,4 @@
 
 ## Iterating Pandas DataFrames
 When iterating over Pandas DataFrames in performance-sensitive sections, prefer `enumerate(df.itertuples(index=False))` over `df.iterrows()`. Using `itertuples` returns namedtuples instead of constructing Pandas Series for every row, making it significantly faster (e.g. from 0.5s to 0.02s for 10000 rows). Also be sure to change `row['Column']` syntax to `row.Column`.
+- Iterating pandas DataFrames: Use `df.itertuples(index=False)` instead of `df.iterrows()`. Measured a ~15x iteration speedup doing this in focus_corrector.py.
