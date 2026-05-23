@@ -41,6 +41,8 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QSize
 from PyQt5.QtGui import QColor, QFont
+from shared_utils.image_processing import crop600
+
 
 # Safe imports for theme styles
 try:
@@ -68,16 +70,6 @@ try:
 except ImportError:
     SKIMAGE_AVAILABLE = False
 
-
-def crop600(arr):
-    h, w = arr.shape[0], arr.shape[1]
-    h_crop = min(h, 600)
-    w_crop = min(w, 900)
-    w_start = (w - w_crop) // 2
-    if arr.ndim == 3:
-        return arr[:h_crop, w_start:w_start+w_crop, :]
-    else:
-        return arr[:h_crop, w_start:w_start+w_crop]
 
 
 def get_percentile_limits(arr):

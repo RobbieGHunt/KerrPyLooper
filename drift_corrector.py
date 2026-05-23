@@ -38,6 +38,8 @@ import pandas as pd
 import matplotlib as mpl
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from shared_utils.image_processing import crop600
+
 
 
 # ──────────────────────────────────────────────────────────────────────────────

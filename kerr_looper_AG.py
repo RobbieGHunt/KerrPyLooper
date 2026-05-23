@@ -20,6 +20,7 @@ from PyQt5.QtCore import Qt, QRect, QPoint, pyqtSignal, QSize, QRectF, QPointF
 from PIL import Image
 import pandas as pd
 import scipy.ndimage as ndimage
+from shared_utils.image_processing import crop600, wiener_deconvolve, get_roi_mean, compute_subtracted_mean
 from scipy.optimize import minimize_scalar
 import matplotlib as mpl
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
@@ -84,16 +85,6 @@ class StyledSplitter(QSplitter):
     def createHandle(self):
         return StyledSplitterHandle(self.orientation(), self)
 
-
-def crop600(arr):
-    h, w = arr.shape[0], arr.shape[1]
-    h_crop = min(h, 600)
-    w_crop = min(w, 900)
-    w_start = (w - w_crop) // 2
-    if arr.ndim == 3:
-        return arr[:h_crop, w_start:w_start+w_crop, :]
-    else:
-        return arr[:h_crop, w_start:w_start+w_crop]
 
 def normalized_for_display(arr, scale=None, contrast=0.5):
     arr = arr.astype(np.float32)
@@ -171,67 +162,6 @@ def estimate_defocus(ref_img_norm, target_img_norm):
     
     res = minimize_scalar(loss, bounds=(0.0, 3.0), method='bounded')
     return res.x
-
-def wiener_deconvolve(image, sigma, balance=0.02):
-    if sigma <= 0.05:
-        return image
-    h, w = image.shape
-    u = np.fft.fftfreq(h)
-    v = np.fft.fftfreq(w)
-    uu, vv = np.meshgrid(u, v, indexing='ij')
-    otf = np.exp(-2 * np.pi**2 * sigma**2 * (uu**2 + vv**2))
-    img_fft = np.fft.fft2(image)
-    otf_conj = np.conj(otf)
-    wiener_filter = otf_conj / (np.abs(otf)**2 + balance)
-    deblurred_fft = img_fft * wiener_filter
-    deblurred = np.real(np.fft.ifft2(deblurred_fft))
-    return deblurred
-
-
-def get_roi_mean(arr, shape_type, roi_data):
-    if shape_type == "None" or roi_data is None:
-        return np.mean(arr)
-        
-    h, w = arr.shape[:2]
-    
-    if shape_type in ["Rectangle", "Square"]:
-        cx, cy, rw, rh, angle_deg = roi_data
-        if rw <= 0 or rh <= 0:
-            return np.mean(arr)
-            
-        theta = np.radians(angle_deg)
-        cos_val = np.cos(theta)
-        sin_val = np.sin(theta)
-        
-        Y, X = np.ogrid[:h, :w]
-        dx = X - cx
-        dy = Y - cy
-        
-        X_local = dx * cos_val + dy * sin_val
-        Y_local = -dx * sin_val + dy * cos_val
-        
-        mask = (np.abs(X_local) <= rw / 2.0) & (np.abs(Y_local) <= rh / 2.0)
-        
-        if not np.any(mask):
-            return np.mean(arr)
-            
-        return np.mean(arr[mask])
-        
-    elif shape_type == "Circle":
-        cx, cy, r = roi_data
-        if r <= 0:
-            return np.mean(arr)
-        Y, X = np.ogrid[:h, :w]
-        dist_sq = (X - cx)**2 + (Y - cy)**2
-        mask = dist_sq <= r**2
-        
-        if not np.any(mask):
-            return np.mean(arr)
-            
-        return np.mean(arr[mask])
-            
-    return np.mean(arr)
-
 
 class ROISelectLabel(QLabel):
     roi_changed = pyqtSignal()
@@ -2619,60 +2549,12 @@ class MOKEImageSubtractor(QWidget):
                     continue
                 try:
                     img_arr = np.array(Image.open(img_path))
-                    
-                    # Crop target first to prevent metadata ringing & optimize speed
-                    img_arr = crop600(img_arr)
-                    
-                    # If z-drift correction is enabled and we are blurring the reference,
-                    # we must copy the background for this specific iteration.
-                    # Otherwise, we can just use the pre-cropped array.
-                    if enable_z and method_idx == 0:
-                        bg_arr = bg_base.copy()
-                    else:
-                        bg_arr = bg_base
-
-                    if enable_z:
-                        field = row['Field']
-                        sigma = coeff * (field ** 2)
-                        if sigma > 0.05:
-                            if method_idx == 0:
-                                # Blur Reference
-                                if bg_arr.ndim == 3:
-                                    for c in range(bg_arr.shape[2]):
-                                        bg_arr[:, :, c] = ndimage.gaussian_filter(bg_arr[:, :, c].astype(np.float64), sigma=sigma)
-                                else:
-                                    bg_arr = ndimage.gaussian_filter(bg_arr.astype(np.float64), sigma=sigma)
-                            else:
-                                # Deblur Target
-                                max_val = np.iinfo(img_arr.dtype).max if np.issubdtype(img_arr.dtype, np.integer) else 255
-                                orig_dtype = img_arr.dtype
-                                if img_arr.ndim == 3:
-                                    img_deblurred = np.zeros_like(img_arr, dtype=np.float64)
-                                    for c in range(img_arr.shape[2]):
-                                        img_deblurred[:, :, c] = wiener_deconvolve(img_arr[:, :, c].astype(np.float64), sigma=sigma)
-                                    img_arr = np.clip(img_deblurred, 0, max_val).astype(orig_dtype)
-                                else:
-                                    img_deblurred = wiener_deconvolve(img_arr.astype(np.float64), sigma=sigma)
-                                    img_arr = np.clip(img_deblurred, 0, max_val).astype(orig_dtype)
-
-                    min_shape = tuple(min(sa, sb) for sa, sb in zip(img_arr.shape, bg_arr.shape))
-                    if img_arr.ndim == 3:
-                        img_c = img_arr[:min_shape[0], :min_shape[1], :min_shape[2]]
-                        bg_c = bg_arr[:min_shape[0], :min_shape[1], :min_shape[2]]
-                    else:
-                        img_c = img_arr[:min_shape[0], :min_shape[1]]
-                        bg_c = bg_arr[:min_shape[0], :min_shape[1]]
-                    arr = img_c.astype(np.float32) - bg_c.astype(np.float32)
-
-                    # Since both img_arr and bg_arr were already cropped using crop600,
-                    # arr is already cropped. No need to crop again.
-                    arr_cropped = arr
-                    
-                    # Store raw subtraction (do not bake the correction in)
-                    if enable_roi:
-                        mean_val = get_roi_mean(arr_cropped, roi_shape, roi_data)
-                    else:
-                        mean_val = np.mean(arr_cropped)
+                    field = row['Field'] if enable_z else 0.0
+                    mean_val = compute_subtracted_mean(
+                        img_arr, bg_base,
+                        enable_z=enable_z, coeff=coeff, method_idx=method_idx, field=field,
+                        enable_roi=enable_roi, roi_shape=roi_shape, roi_data=roi_data
+                    )
                     means.append(mean_val)
                 except Exception as e:
                     print(f"Error processing {img_file}: {e}")
