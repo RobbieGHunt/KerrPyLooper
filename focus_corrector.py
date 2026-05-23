@@ -6,20 +6,7 @@ import scipy.ndimage as ndimage
 import pandas as pd
 from scipy.optimize import minimize_scalar
 import matplotlib.pyplot as plt
-
-def crop600(arr):
-    """
-    Crop arrays to 600x600 pixels (center horizontally, top vertically).
-    This removes bottom metadata/labels and boundary ringing.
-    """
-    h, w = arr.shape[0], arr.shape[1]
-    h_crop = min(h, 600)
-    w_crop = min(w, 600)
-    w_start = (w - w_crop) // 2
-    if arr.ndim == 3:
-        return arr[:h_crop, w_start:w_start+w_crop, :]
-    else:
-        return arr[:h_crop, w_start:w_start+w_crop]
+from shared_utils.image_processing import crop_focus, wiener_deconvolve
 
 def normalize_image(img):
     """
@@ -85,28 +72,6 @@ def estimate_defocus(ref_img_norm, target_img_norm):
     res = minimize_scalar(loss, bounds=(0.0, 3.0), method='bounded')
     return res.x
 
-def wiener_deconvolve(image, sigma, balance=0.02):
-    """
-    Perform frequency-domain Wiener deconvolution using a Gaussian PSF.
-    """
-    if sigma <= 0.05:
-        return image
-    h, w = image.shape
-    u = np.fft.fftfreq(h)
-    v = np.fft.fftfreq(w)
-    uu, vv = np.meshgrid(u, v, indexing='ij')
-    
-    # Gaussian OTF directly in frequency domain
-    otf = np.exp(-2 * np.pi**2 * sigma**2 * (uu**2 + vv**2))
-    
-    img_fft = np.fft.fft2(image)
-    otf_conj = np.conj(otf)
-    wiener_filter = otf_conj / (np.abs(otf)**2 + balance)
-    
-    deblurred_fft = img_fft * wiener_filter
-    deblurred = np.real(np.fft.ifft2(deblurred_fft))
-    return deblurred
-
 def focus_correct_series(img_dir, txt_path, output_dir, balance=0.02):
     print(f"Loading mapping file: {txt_path}")
     df = pd.read_csv(txt_path, sep=None, engine='python', comment="#", skip_blank_lines=True)
@@ -131,7 +96,7 @@ def focus_correct_series(img_dir, txt_path, output_dir, balance=0.02):
         ref_img = (0.2989 * ref_img_raw[:, :, 0] + 0.5870 * ref_img_raw[:, :, 1] + 0.1140 * ref_img_raw[:, :, 2])
     else:
         ref_img = ref_img_raw.astype(np.float64)
-    ref_cropped = crop600(ref_img)
+    ref_cropped = crop_focus(ref_img)
     
     # Find defect ROI coordinates in 600x600 image
     patch_size = 128
@@ -157,7 +122,7 @@ def focus_correct_series(img_dir, txt_path, output_dir, balance=0.02):
             target_img = (0.2989 * target_img_raw[:, :, 0] + 0.5870 * target_img_raw[:, :, 1] + 0.1140 * target_img_raw[:, :, 2])
         else:
             target_img = target_img_raw.astype(np.float64)
-        target_cropped = crop600(target_img)
+        target_cropped = crop_focus(target_img)
         target_patch = target_cropped[r:r+patch_size, c:c+patch_size]
         target_patch_norm = normalize_image(target_patch)
         
@@ -202,7 +167,7 @@ def focus_correct_series(img_dir, txt_path, output_dir, balance=0.02):
         target_arr_raw = np.array(target_img_pil)
         
         # Crop the target to 600x600 first
-        target_arr = crop600(target_arr_raw)
+        target_arr = crop_focus(target_arr_raw)
         
         # Determine defocus value from fitted curve (smooths out noise)
         sigma_fit = fitted_sigmas[idx]
