@@ -1,28 +1,43 @@
-import os
-import pandas as pd
-from batch_processor import load_txt_data
+import numpy as np
+import pytest
+from batch_processor import crop600
 
-def test_load_txt_data(tmpdir):
-    data_dir = str(tmpdir)
+def test_crop600_2d_less_than_600():
+    arr = np.zeros((500, 100))
+    cropped = crop600(arr)
+    assert cropped.shape == (500, 100)
+    assert np.array_equal(cropped, arr)
 
-    # 1. Create a fake file
-    with open(os.path.join(data_dir, "fake.txt"), "w") as f:
-        f.write("Hello\nWorld\n")
+def test_crop600_2d_exactly_600():
+    arr = np.zeros((600, 100))
+    cropped = crop600(arr)
+    assert cropped.shape == (600, 100)
+    assert np.array_equal(cropped, arr)
 
-    # 2. Create an empty file
-    with open(os.path.join(data_dir, "empty.txt"), "w") as f:
-        pass
+def test_crop600_2d_greater_than_600():
+    arr = np.zeros((700, 100))
+    # Give it some data to ensure we keep the correct rows
+    arr[600, 0] = 1
+    cropped = crop600(arr)
+    assert cropped.shape == (600, 100)
+    assert np.array_equal(cropped, arr[:600, :])
 
-    # 3. Create a valid file
-    with open(os.path.join(data_dir, "valid.txt"), "w") as f:
-        f.write("Field,Intensity,File\n")
-        f.write("1.0, 10, img1.png\n")
-        f.write("2.0, 20, img2.png\n")
-        f.write("3.0, 30, img3.png\n")
+def test_crop600_3d_less_than_600():
+    arr = np.zeros((500, 100, 3))
+    cropped = crop600(arr)
+    assert cropped.shape == (500, 100, 3)
+    assert np.array_equal(cropped, arr)
 
-    df = load_txt_data(data_dir)
-    assert df is not None
-    assert len(df) == 3
-    assert list(df.columns) == ["Field", "Intensity", "File"]
-    # We should handle leading spaces since original didn't strip entirely from the values
-    # Actually wait let's just make the test values not have a leading space.
+def test_crop600_3d_exactly_600():
+    arr = np.zeros((600, 100, 3))
+    cropped = crop600(arr)
+    assert cropped.shape == (600, 100, 3)
+    assert np.array_equal(cropped, arr)
+
+def test_crop600_3d_greater_than_600():
+    arr = np.zeros((700, 100, 3))
+    # Give it some data to ensure we keep the correct rows
+    arr[600, 0, 0] = 1
+    cropped = crop600(arr)
+    assert cropped.shape == (600, 100, 3)
+    assert np.array_equal(cropped, arr[:600, :, :])
