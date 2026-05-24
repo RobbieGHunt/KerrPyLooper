@@ -2554,7 +2554,9 @@ class MOKEImageSubtractor(QWidget):
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            def process_row(row):
+            # ⚡ Bolt: Use itertuples instead of iterrows for much faster iteration
+            for row in self.txt_data.itertuples(index=True):
+                idx = row.Index
                 img_file = row.File.strip()
                 img_path = os.path.join(self.img_dir, img_file)
                 if not os.path.exists(img_path):

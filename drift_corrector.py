@@ -1264,13 +1264,14 @@ class DriftCorrectorWindow(QMainWindow):
 
             shifts = []
             n = len(self.txt_data)
-            for i, (_, row_data) in enumerate(self.txt_data.iterrows()):
+            # ⚡ Bolt: Use itertuples instead of iterrows for much faster iteration
+            for i, row_data in enumerate(self.txt_data.itertuples(index=False)):
                 QApplication.processEvents()   # keep GUI alive
                 if self._abort_flag:
                     self._log("Estimation aborted by user.")
                     break
 
-                fname = row_data['File'].strip()
+                fname = row_data.File.strip()
                 fpath = os.path.join(self.img_dir, fname)
                 self._log(f"  [{i+1}/{n}] {fname}")
 
@@ -1348,9 +1349,10 @@ class DriftCorrectorWindow(QMainWindow):
         errors = []
         try:
             n = len(self.txt_data)
-            for i, (_, row) in enumerate(self.txt_data.iterrows()):
-                input_fname = row['File'].strip()
-                output_fname = row['File_Original'].strip()
+            # ⚡ Bolt: Use itertuples instead of iterrows for much faster iteration
+            for i, row in enumerate(self.txt_data.itertuples(index=False)):
+                input_fname = row.File.strip()
+                output_fname = row.File_Original.strip()
                 fpath = os.path.join(self.img_dir, input_fname)
                 dy, dx = self.shifts[i]
                 try:
