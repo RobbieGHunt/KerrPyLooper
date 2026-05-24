@@ -55,6 +55,51 @@ except ImportError:
 # Utility helpers (mirror of kerr_looper_AG.py, no GUI dependency)
 # ---------------------------------------------------------------------------
 
+def _parse_txt_file(txt_file: str) -> "pd.DataFrame | None":
+    """
+    Attempt to read and parse a single text file into a structured DataFrame.
+    Returns the formatted DataFrame if valid, otherwise None.
+    """
+    import pandas as pd
+
+    # Skip empty files
+    if os.path.getsize(txt_file) == 0:
+        return None
+
+    # Quick check: a valid data file must reference ".png" files
+    with open(txt_file, 'r', encoding='utf-8', errors='ignore') as f:
+        head = f.read(1024 * 1024)  # Read up to 1MB
+    if ".png" not in head.lower():
+        return None
+
+    # Attempt to read as structured data
+    df = pd.read_csv(txt_file, sep=None, engine="python",
+                     comment="#", skip_blank_lines=True)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    if len(df.columns) < 3:
+        return None
+
+    # Check if the third column has ".png" indicating it's the correct file
+    df_filtered = df[df[df.columns[2]].astype(str).str.strip().str.lower().str.endswith(".png", na=False)]
+
+    if len(df_filtered) >= 3:
+        # We found the valid data file
+        df = df_filtered.rename(columns={
+            df.columns[0]: "Field",
+            df.columns[1]: "Intensity",
+            df.columns[2]: "File",
+        }).reset_index(drop=True)
+        df["Field"] = pd.to_numeric(df["Field"], errors="coerce")
+        df["Intensity"] = pd.to_numeric(df["Intensity"], errors="coerce")
+        df = df.dropna(subset=["Field", "Intensity"])
+
+        if len(df) >= 3:
+            return df
+
+    return None
+
+
 def load_txt_data(data_dir: str, print_func=print):
     """
     Find a valid .txt data file in *data_dir* and return a DataFrame with columns
