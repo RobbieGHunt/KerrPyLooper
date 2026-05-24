@@ -16,8 +16,6 @@ This program was made using old, often very manual scripts as the basis and tran
   - Dynamic slider scaling to make manual adjustments physically intuitive.
   - Everything you can do in the "offline looper" available with an Evico microscope, and hopefully some more.
 
-- **Ringing-Free Image Processing**: Pre-crops target and reference images to the relevant content (if you are using an Evico microscope) to eliminate bottom metadata labels and text, avoiding boundary ringing artifacts during FFT.
-
 - **Robust Coercivity ($H_c$) and Remanence ($H_r$) Extraction**: Uses linear interpolation over saturation-focused midpoints to identify magnetic switching events, remaining immune to transient noise and switching shifts.
 
 - **Batch Processing of Hysteresis Loops**: Able to explore many sub-directories to process hysteresis loop corrections and output the coercivity and remanence, will automatically plot this as a number of "steps" if folder are labelled in this way.
@@ -31,8 +29,11 @@ This program was made using old, often very manual scripts as the basis and tran
 
 
 ## Codebase Structure
-
-- `kerr_looper_AG.py`: The main interactive PyQt5 GUI application.
+ `suite_launcher.py`: The main interactive PyQt5 GUI application for launching the various subprograms (can all be launched from their scripts). Supports opening multiple scripts at a time.
+- `kerr_looper_AG.py`: The interactive PyQt5 GUI application for adjusting contrast and hysteresis loops.
+- `batch_processor.py`: Automatic hysteresis loop correction program. Scans over an entire directory for valid folders, automatically applies corrections to the hysteresis loops, save this loop, and outputs Hc/Hr.
+- `vector_analysis.py`: Interactive tool for visualising two axes of contrast in a vector format.
+- `drift_corrector.py`: Tool to adjust for mechanical or field-induced drift by adjusting the pixel position of a defect point.
 - `focus_corrector.py`: Standalone command-line Python script to batch-process focus drift correction on raw image series.
 
 ---
