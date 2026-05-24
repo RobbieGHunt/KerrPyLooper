@@ -6,6 +6,7 @@ Created on Mon May 18 18:36:05 2026
 """
 
 import sys
+import concurrent.futures
 import os
 import numpy as np
 from PyQt5.QtWidgets import (
@@ -2541,24 +2542,29 @@ class MOKEImageSubtractor(QWidget):
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            for idx, row in self.txt_data.iterrows():
-                img_file = row['File'].strip()
+            def process_row(row):
+                img_file = row.File.strip()
                 img_path = os.path.join(self.img_dir, img_file)
                 if not os.path.exists(img_path):
-                    means.append(np.nan)
-                    continue
+                    return np.nan
                 try:
                     img_arr = np.array(Image.open(img_path))
-                    field = row['Field'] if enable_z else 0.0
+                    field = row.Field if enable_z else 0.0
                     mean_val = compute_subtracted_mean(
                         img_arr, bg_base,
                         enable_z=enable_z, coeff=coeff, method_idx=method_idx, field=field,
                         enable_roi=enable_roi, roi_shape=roi_shape, roi_data=roi_data
                     )
-                    means.append(mean_val)
+                    return mean_val
                 except Exception as e:
                     print(f"Error processing {img_file}: {e}")
-                    means.append(np.nan)
+                    return np.nan
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                means = list(
+                    executor.map(process_row, self.txt_data.itertuples(index=False))
+                )
+
             self.last_loop_was_roi = enable_roi
             self.loop_intens_subtracted = np.array(means, dtype=np.float32)
             

@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from batch_processor import crop600
+from shared_utils.image_processing import crop600
 
 def test_crop600_2d_less_than_600():
     arr = np.zeros((500, 100))
