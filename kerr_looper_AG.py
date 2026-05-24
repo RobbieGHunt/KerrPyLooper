@@ -2541,15 +2541,17 @@ class MOKEImageSubtractor(QWidget):
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            for idx, row in self.txt_data.iterrows():
-                img_file = row['File'].strip()
+            # ⚡ Bolt: Use itertuples instead of iterrows for much faster iteration
+            for row in self.txt_data.itertuples(index=True):
+                idx = row.Index
+                img_file = row.File.strip()
                 img_path = os.path.join(self.img_dir, img_file)
                 if not os.path.exists(img_path):
                     means.append(np.nan)
                     continue
                 try:
                     img_arr = np.array(Image.open(img_path))
-                    field = row['Field'] if enable_z else 0.0
+                    field = row.Field if enable_z else 0.0
                     mean_val = compute_subtracted_mean(
                         img_arr, bg_base,
                         enable_z=enable_z, coeff=coeff, method_idx=method_idx, field=field,
