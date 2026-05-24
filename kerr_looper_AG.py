@@ -6,6 +6,7 @@ Created on Mon May 18 18:36:05 2026
 """
 
 import sys
+import concurrent.futures
 import os
 import numpy as np
 from PyQt5.QtWidgets import (
@@ -531,7 +532,48 @@ class LoopCorrectionPanel(QWidget):
         splitter = StyledSplitter(Qt.Vertical)
         splitter.setHandleWidth(8)
 
-        # Top widget: Plot canvas container
+        # 1. Top widget: Plot canvas container
+        plot_container = self.setup_plot_area()
+        splitter.addWidget(plot_container)
+
+        # 2. Bottom widget: Controls container
+        controls_widget = QWidget()
+        controls_layout = QVBoxLayout()
+        controls_widget.setLayout(controls_layout)
+
+        self.btn_norm = QPushButton("Normalize (Intensity: -1 .. 1)")
+        self.btn_norm.setCheckable(True)
+        self.btn_norm.clicked.connect(self.toggle_normalize)
+        controls_layout.addWidget(self.btn_norm)
+
+        # 2a. Corrections Group
+        self.setup_correction_controls(controls_layout)
+
+        # 2b. Out-of-Plane Focus Correction Group
+        self.setup_z_correction_controls(controls_layout)
+
+        # 2c. Plot Style Settings Group
+        self.setup_plot_settings(controls_layout)
+
+        self.hc_hr_output = QTextEdit()
+        self.hc_hr_output.setReadOnly(True)
+        self.hc_hr_output.setMinimumHeight(20)
+        controls_layout.addWidget(self.hc_hr_output)
+
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QScrollArea.NoFrame)
+        scroll_area.setWidget(controls_widget)
+
+        splitter.addWidget(scroll_area)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setSizes([300, 400])
+
+        main_layout.addWidget(splitter)
+        self.setLayout(main_layout)
+
+    def setup_plot_area(self):
         plot_container = QWidget()
         self.plot_layout = QVBoxLayout()
         self.plot_layout.setContentsMargins(0, 0, 0, 0)
@@ -544,7 +586,6 @@ class LoopCorrectionPanel(QWidget):
         ax_bg = colors["bg"]
         text_color = colors["text"]
         
-        # Placeholder label
         self.placeholder_label = QLabel("No data loaded. Select a directory and click 'Make Loop' to plot.")
         self.placeholder_label.setAlignment(Qt.AlignCenter)
         self.placeholder_label.setObjectName("PlotPlaceholder")
@@ -557,18 +598,9 @@ class LoopCorrectionPanel(QWidget):
         
         self.plot_layout.addWidget(self.placeholder_label)
         plot_container.setLayout(self.plot_layout)
-        splitter.addWidget(plot_container)
+        return plot_container
 
-        # Bottom widget: Controls container
-        controls_widget = QWidget()
-        controls_layout = QVBoxLayout()
-        controls_widget.setLayout(controls_layout)
-
-        self.btn_norm = QPushButton("Normalize (Intensity: -1 .. 1)")
-        self.btn_norm.setCheckable(True)
-        self.btn_norm.clicked.connect(self.toggle_normalize)
-        controls_layout.addWidget(self.btn_norm)
-
+    def setup_correction_controls(self, controls_layout):
         group = QGroupBox("Corrections")
         glayout = QFormLayout()
 
@@ -640,7 +672,6 @@ class LoopCorrectionPanel(QWidget):
         hbox_quad_offset.addWidget(self.spin_quad_offset)
         glayout.addRow("Quadratic Field Offset", hbox_quad_offset)
 
-
         # Auto, Zero and Hc/Hr buttons
         hbox_auto = QHBoxLayout()
         self.btn_auto = QPushButton("Auto Correct")
@@ -664,7 +695,7 @@ class LoopCorrectionPanel(QWidget):
         group.setLayout(glayout)
         controls_layout.addWidget(group)
 
-        # Out-of-Plane Focus Correction
+    def setup_z_correction_controls(self, controls_layout):
         group_z = QGroupBox("Out-of-Plane Focus Correction")
         zlayout = QFormLayout()
 
@@ -702,7 +733,7 @@ class LoopCorrectionPanel(QWidget):
         group_z.setLayout(zlayout)
         controls_layout.addWidget(group_z)
 
-        # Plot Style Settings GroupBox
+    def setup_plot_settings(self, controls_layout):
         group_plot = QGroupBox("Plot Settings")
         plot_settings_layout = QFormLayout()
         
@@ -825,24 +856,6 @@ class LoopCorrectionPanel(QWidget):
 
         group_plot.setLayout(plot_settings_layout)
         controls_layout.addWidget(group_plot)
-
-        self.hc_hr_output = QTextEdit()
-        self.hc_hr_output.setReadOnly(True)
-        self.hc_hr_output.setMinimumHeight(20)
-        controls_layout.addWidget(self.hc_hr_output)
-
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setFrameShape(QScrollArea.NoFrame)
-        scroll_area.setWidget(controls_widget)
-
-        splitter.addWidget(scroll_area)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 0)
-        splitter.setSizes([300, 400])
-
-        main_layout.addWidget(splitter)
-        self.setLayout(main_layout)
 
     def update_correction_ranges(self, ptp_val):
         if np.isnan(ptp_val) or ptp_val <= 0:
@@ -2547,8 +2560,7 @@ class MOKEImageSubtractor(QWidget):
                 img_file = row.File.strip()
                 img_path = os.path.join(self.img_dir, img_file)
                 if not os.path.exists(img_path):
-                    means.append(np.nan)
-                    continue
+                    return np.nan
                 try:
                     img_arr = np.array(Image.open(img_path))
                     field = row.Field if enable_z else 0.0
@@ -2557,10 +2569,16 @@ class MOKEImageSubtractor(QWidget):
                         enable_z=enable_z, coeff=coeff, method_idx=method_idx, field=field,
                         enable_roi=enable_roi, roi_shape=roi_shape, roi_data=roi_data
                     )
-                    means.append(mean_val)
+                    return mean_val
                 except Exception as e:
                     print(f"Error processing {img_file}: {e}")
-                    means.append(np.nan)
+                    return np.nan
+
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                means = list(
+                    executor.map(process_row, self.txt_data.itertuples(index=False))
+                )
+
             self.last_loop_was_roi = enable_roi
             self.loop_intens_subtracted = np.array(means, dtype=np.float32)
             
