@@ -525,6 +525,8 @@ class LoopCorrectionPanel(QWidget):
         self.ax = None
         self.canvas = None
         self.toolbar = None
+        self._in_plot = False
+        self._in_resize = False
         self.init_ui()
 
     def init_ui(self):
@@ -1145,17 +1147,32 @@ class LoopCorrectionPanel(QWidget):
         self.replot_current_data()
 
     def on_canvas_resize(self, event):
+        if getattr(self, '_in_resize', False) or getattr(self, '_in_plot', False):
+            return
         if self.canvas is None:
             return
-        self.canvas.original_resizeEvent(event)
-        if self.parent_widget and self.parent_widget.loop_field is not None:
-            # Save limits to be restored inside plot_loop
-            self._resize_limits = (self.ax.get_xlim(), self.ax.get_ylim())
-            self.replot_current_data()
-        else:
-            self.replot_current_data()
+        self._in_resize = True
+        try:
+            self.canvas.original_resizeEvent(event)
+            if self.parent_widget and self.parent_widget.loop_field is not None:
+                # Save limits to be restored inside plot_loop
+                self._resize_limits = (self.ax.get_xlim(), self.ax.get_ylim())
+                self.replot_current_data()
+            else:
+                self.replot_current_data()
+        finally:
+            self._in_resize = False
 
     def plot_loop(self, field, intensity, show_title="Hysteresis Loop"):
+        if getattr(self, '_in_plot', False):
+            return
+        self._in_plot = True
+        try:
+            self._plot_loop_inner(field, intensity, show_title)
+        finally:
+            self._in_plot = False
+
+    def _plot_loop_inner(self, field, intensity, show_title="Hysteresis Loop"):
         if self.canvas is None:
             theme = "dark"
             if self.parent_widget and hasattr(self.parent_widget, 'theme'):
@@ -2128,12 +2145,8 @@ class MOKEImageSubtractor(QWidget):
         self.update_list_widget_items(self.list_results, self.image_files)
 
     def load_txt_data(self):
-        txt_file = None
-        for fn in os.listdir(self.img_dir):
-            if fn.lower().endswith('.txt'):
-                txt_file = os.path.join(self.img_dir, fn)
-                break
-        if not txt_file:
+        txt_files = [fn for fn in os.listdir(self.img_dir) if fn.lower().endswith('.txt')]
+        if not txt_files:
             self.txt_data = None
             self.btn_make_loop.setEnabled(False)
             self.btn_make_loop.setToolTip("Load a directory with a mapping .txt file first to make a loop")
@@ -2141,22 +2154,35 @@ class MOKEImageSubtractor(QWidget):
             self.mean_index = self.mean_field = None
             self.loop_panel.clear_plot()
             return
+
+        parsed_df = None
+        for fn in txt_files:
+            txt_file = os.path.join(self.img_dir, fn)
+            try:
+                df = pd.read_csv(txt_file, sep=None, engine='python', comment="#", skip_blank_lines=True)
+                df.columns = [c.strip() for c in df.columns]
+                if len(df.columns) < 3:
+                    continue
+                df_filtered = df[df[df.columns[2]].astype(str).str.lower().str.endswith(".png", na=False)]
+                if len(df_filtered) >= 3:
+                    parsed_df = df_filtered.rename(
+                        columns={df.columns[0]: "Field", df.columns[1]: "Intensity", df.columns[2]: "File"}
+                    ).reset_index(drop=True)
+                    break
+            except Exception:
+                continue
+
+        if parsed_df is None:
+            self.txt_data = None
+            self.btn_make_loop.setEnabled(False)
+            self.btn_make_loop.setToolTip("Load a directory with a mapping .txt file first to make a loop")
+            self.loop_field = self.loop_indices = self.loop_intens_txt = self.loop_intens_subtracted = None
+            self.mean_index = self.mean_field = None
+            self.loop_panel.clear_plot()
+            return
+
         try:
-            df = pd.read_csv(txt_file, sep=None, engine='python', comment="#", skip_blank_lines=True)
-            df.columns = [c.strip() for c in df.columns]
-            if len(df.columns) < 3:
-                QMessageBox.critical(self, "Error", f"Text file {os.path.basename(txt_file)} missing columns.")
-                self.txt_data = None
-                self.btn_make_loop.setEnabled(False)
-                self.btn_make_loop.setToolTip("Load a directory with a mapping .txt file first to make a loop")
-                self.loop_field = self.loop_indices = self.loop_intens_txt = self.loop_intens_subtracted = None
-                self.mean_index = self.mean_field = None
-                self.loop_panel.clear_plot()
-                return
-            df = df[df[df.columns[2]].str.lower().str.endswith(".png", na=False)]
-            self.txt_data = df.rename(
-                columns={df.columns[0]:"Field", df.columns[1]:"Intensity", df.columns[2]:"File"}
-            ).reset_index(drop=True)
+            self.txt_data = parsed_df
             self.txt_data["File"] = self.txt_data["File"].str.strip()
             self.loop_field = self.txt_data["Field"].to_numpy(dtype=np.float32)
             self.loop_indices = np.arange(len(self.txt_data))
@@ -2554,9 +2580,8 @@ class MOKEImageSubtractor(QWidget):
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            # ⚡ Bolt: Use itertuples instead of iterrows for much faster iteration
-            for row in self.txt_data.itertuples(index=True):
-                idx = row.Index
+            # Define a helper function to process a single row for the ThreadPoolExecutor
+            def process_row(row):
                 img_file = row.File.strip()
                 img_path = os.path.join(self.img_dir, img_file)
                 if not os.path.exists(img_path):
@@ -2564,12 +2589,11 @@ class MOKEImageSubtractor(QWidget):
                 try:
                     img_arr = np.array(Image.open(img_path))
                     field = row.Field if enable_z else 0.0
-                    mean_val = compute_subtracted_mean(
+                    return compute_subtracted_mean(
                         img_arr, bg_base,
                         enable_z=enable_z, coeff=coeff, method_idx=method_idx, field=field,
                         enable_roi=enable_roi, roi_shape=roi_shape, roi_data=roi_data
                     )
-                    return mean_val
                 except Exception as e:
                     print(f"Error processing {img_file}: {e}")
                     return np.nan

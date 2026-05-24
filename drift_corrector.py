@@ -909,18 +909,19 @@ class DriftCorrectorWindow(QMainWindow):
                                      comment='#', skip_blank_lines=True)
                     df.columns = [c.strip() for c in df.columns]
                     if len(df.columns) >= 3:
-                        df = df[df[df.columns[2]].str.lower().str.endswith('.png', na=False)]
-                        df = df.rename(columns={df.columns[0]: 'Field',
-                                                df.columns[1]: 'Intensity',
-                                                df.columns[2]: 'File'})
-                        df['File'] = df['File'].str.strip()
-                        df['File_Original'] = df['File']
-                        self.txt_data = df.reset_index(drop=True)
-                        self.loop_field = df['Field'].to_numpy(dtype=np.float32)
-                        self._log(f"Loaded mapping: {fn}  ({len(df)} entries)")
+                        df_filtered = df[df[df.columns[2]].str.lower().str.endswith('.png', na=False)]
+                        if len(df_filtered) >= 3:
+                            df = df_filtered.rename(columns={df.columns[0]: 'Field',
+                                                             df.columns[1]: 'Intensity',
+                                                             df.columns[2]: 'File'})
+                            df['File'] = df['File'].str.strip()
+                            df['File_Original'] = df['File']
+                            self.txt_data = df.reset_index(drop=True)
+                            self.loop_field = df['Field'].to_numpy(dtype=np.float32)
+                            self._log(f"Loaded mapping: {fn}  ({len(df)} entries)")
+                            break
                 except Exception as e:
                     self._log(f"Could not parse {fn}: {e}")
-                break
 
         self._populate_images_from_mapping()
 
