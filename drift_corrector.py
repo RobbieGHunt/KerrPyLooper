@@ -23,6 +23,7 @@ import sys
 import os
 import numpy as np
 import datetime
+import concurrent.futures
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QListWidget, QGroupBox, QFormLayout,
@@ -1264,21 +1265,13 @@ class DriftCorrectorWindow(QMainWindow):
 
             shifts = []
             n = len(self.txt_data)
-            # ⚡ Bolt: Use itertuples instead of iterrows for much faster iteration
-            for i, row_data in enumerate(self.txt_data.itertuples(index=False)):
-                QApplication.processEvents()   # keep GUI alive
-                if self._abort_flag:
-                    self._log("Estimation aborted by user.")
-                    break
 
+            def process_estimation(row_data):
                 fname = row_data.File.strip()
                 fpath = os.path.join(self.img_dir, fname)
-                self._log(f"  [{i+1}/{n}] {fname}")
 
                 if not os.path.isfile(fpath):
-                    self._log(f"    File not found — skipping.")
-                    shifts.append((0.0, 0.0))
-                    continue
+                    return (fname, (0.0, 0.0), "File not found — skipping.")
 
                 try:
                     arr = np.array(Image.open(fpath))
@@ -1293,12 +1286,33 @@ class DriftCorrectorWindow(QMainWindow):
                     dy, dx, _ = estimate_shift_sqdiff(
                         ref_patch, grad, r, c, h, w, search_width
                     )
-                    shifts.append((dy, dx))
+                    return (fname, (dy, dx), None)
                 except Exception as e:
-                    self._log(f"    Warning: {e}")
-                    shifts.append((0.0, 0.0))
+                    return (fname, (0.0, 0.0), f"Warning: {e}")
 
-                self.progress_bar.setValue(int((i + 1) / n * 100))
+            # ⚡ Bolt: Use ThreadPoolExecutor and .submit() to parallelize synchronous I/O and numpy operations.
+            # We use submit so we can properly cancel pending tasks if the user aborts.
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                futures = []
+                for row in self.txt_data.itertuples(index=False):
+                    futures.append(executor.submit(process_estimation, row))
+
+                for i, future in enumerate(futures):
+                    QApplication.processEvents()   # keep GUI alive
+                    if self._abort_flag:
+                        self._log("Estimation aborted by user.")
+                        for pending in futures[i:]:
+                            pending.cancel()
+                        break
+
+                    # This will block if not done, but we process them in order
+                    fname, shift, err_msg = future.result()
+                    self._log(f"  [{i+1}/{n}] {fname}")
+                    if err_msg:
+                        self._log(f"    {err_msg}")
+
+                    shifts.append(shift)
+                    self.progress_bar.setValue(int((i + 1) / n * 100))
 
             if not self._abort_flag:
                 self.shifts = shifts
@@ -1349,8 +1363,9 @@ class DriftCorrectorWindow(QMainWindow):
         errors = []
         try:
             n = len(self.txt_data)
-            # ⚡ Bolt: Use itertuples instead of iterrows for much faster iteration
-            for i, row in enumerate(self.txt_data.itertuples(index=False)):
+
+            def process_save(row_data):
+                i, row = row_data
                 input_fname = row.File.strip()
                 output_fname = row.File_Original.strip()
                 fpath = os.path.join(self.img_dir, input_fname)
@@ -1372,11 +1387,23 @@ class DriftCorrectorWindow(QMainWindow):
                         final_arr = corrected[r1:r2, c1:c2]
                         
                     Image.fromarray(final_arr).save(os.path.join(out_dir, output_fname))
+                    return None
                 except Exception as e:
-                    errors.append(f"{output_fname}: {e}")
+                    return f"{output_fname}: {e}"
 
-                self.progress_bar.setValue(int((i + 1) / n * 100))
-                QApplication.processEvents()
+            # ⚡ Bolt: Use ThreadPoolExecutor to parallelize image loading, processing and saving.
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                futures = []
+                for i, row in enumerate(self.txt_data.itertuples(index=False)):
+                    futures.append(executor.submit(process_save, (i, row)))
+
+                for i, future in enumerate(futures):
+                    err_msg = future.result()
+                    if err_msg:
+                        errors.append(err_msg)
+
+                    self.progress_bar.setValue(int((i + 1) / n * 100))
+                    QApplication.processEvents()
 
             # Copy / rewrite the mapping txt
             if self.txt_data is not None:
