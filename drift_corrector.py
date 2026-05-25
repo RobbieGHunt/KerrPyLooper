@@ -113,10 +113,15 @@ def robust_normalize_raw(arr):
 # Core drift estimation algorithm
 # ──────────────────────────────────────────────────────────────────────────────
 
+import scipy.signal
+
 def estimate_shift_sqdiff(ref_patch_grad, target_img_grad, roi_r, roi_c, patch_h, patch_w, search_width):
     """
     Estimate (dy, dx) shift of target_img relative to ref using Sum of Squared
     Differences (SQDIFF).
+
+    ⚡ Bolt Optimization: Uses `scipy.signal.fftconvolve` instead of O(N^2)
+    nested loops for fast template matching in the frequency domain.
 
     Parameters
     ----------
@@ -142,32 +147,50 @@ def estimate_shift_sqdiff(ref_patch_grad, target_img_grad, roi_r, roi_c, patch_h
     sw = search_width
     img_h, img_w = target_img_grad.shape
 
-    # Build a grid of candidate shifts
+    # Define the bounds of the search region in target
+    r_start = roi_r - sw
+    r_end = roi_r + sw + patch_h
+    c_start = roi_c - sw
+    c_end = roi_c + sw + patch_w
+
+    # Identify how much of this search region is inside the target image
+    r0 = max(0, r_start)
+    r1 = min(img_h, r_end)
+    c0 = max(0, c_start)
+    c1 = min(img_w, c_end)
+
+    # We will compute fftconvolve directly on the valid part of the target image
+    search_patch = target_img_grad[r0:r1, c0:c1].astype(np.float32)
+    ref_float = ref_patch_grad.astype(np.float32)
+
+    # Check if we can even fit the ref_patch in the search_patch
+    if r1 - r0 < patch_h or c1 - c0 < patch_w:
+        # Cannot fit
+        ncc_map = np.full((2*sw+1, 2*sw+1), float('inf'), dtype=np.float32)
+        dy_sub, dx_sub = 0.0, 0.0
+        return dy_sub, dx_sub, ncc_map
+
+    sum_tgt2 = scipy.signal.fftconvolve(search_patch ** 2, np.ones_like(ref_float), mode='valid')
+    cross_corr = scipy.signal.fftconvolve(search_patch, ref_float[::-1, ::-1], mode='valid')
+    sum_ref2 = np.sum(ref_float ** 2)
+
+    local_ncc_map = sum_ref2 + sum_tgt2 - 2 * cross_corr
+
+    # Map local_ncc_map back to the full (2*sw+1, 2*sw+1) grid
+    di_offset = r0 - roi_r + sw
+    dj_offset = c0 - roi_c + sw
+
+    ncc_map = np.full((2*sw+1, 2*sw+1), float('inf'), dtype=np.float32)
+
+    ncc_map[di_offset : di_offset + local_ncc_map.shape[0],
+            dj_offset : dj_offset + local_ncc_map.shape[1]] = local_ncc_map
+
+    # Find integer peak
+    peak_i, peak_j = np.unravel_index(np.argmin(ncc_map), ncc_map.shape)
+
     dy_vals = np.arange(-sw, sw + 1)
     dx_vals = np.arange(-sw, sw + 1)
 
-    ncc_map = np.full((len(dy_vals), len(dx_vals)), float('inf'), dtype=np.float32)
-
-    for i, dy in enumerate(dy_vals):
-        for j, dx in enumerate(dx_vals):
-            # Sample the target patch at (roi_r+dy, roi_c+dx)
-            r0 = roi_r + dy
-            c0 = roi_c + dx
-            r1 = r0 + patch_h
-            c1 = c0 + patch_w
-
-            # Bounds check
-            if r0 < 0 or c0 < 0 or r1 > img_h or c1 > img_w:
-                continue
-
-            tgt_patch = target_img_grad[r0:r1, c0:c1]
-            diff = ref_patch_grad.astype(np.float32) - tgt_patch.astype(np.float32)
-            ncc_map[i, j] = float(np.sum(diff ** 2))
-
-    # Find integer peak (minimum diff)
-    peak_i, peak_j = np.unravel_index(np.argmin(ncc_map), ncc_map.shape)
-
-    # Sub-pixel refinement: fit quadratic along each axis through the peak
     def sub_pixel_1d(vals, scores, peak_idx):
         if peak_idx == 0 or peak_idx == len(scores) - 1:
             return float(vals[peak_idx])
