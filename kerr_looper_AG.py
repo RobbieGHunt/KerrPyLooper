@@ -2368,9 +2368,8 @@ class MOKEImageSubtractor(QWidget):
         img_path = os.path.join(self.img_dir, img_file)
         self.update_browse_images_label(img_file)
         
-        # If no background is set, or if the selected image is the background itself,
-        # display the original image instead of a flat/zero difference or static.
-        if self.background_array is None or img_file == self.background_image:
+        # If no background is set yet, display the original raw image instead.
+        if self.background_array is None:
             try:
                 img_arr = np.array(Image.open(img_path))
                 img_arr = crop600(img_arr)
@@ -2399,13 +2398,14 @@ class MOKEImageSubtractor(QWidget):
                 self.current_image_idx = idx
                 self.current_image_file = img_file
                 self.btn_save.setEnabled(False)
-                self.btn_save.setToolTip("Set a background image and select an image to subtract first")  # Save is disabled for raw image preview
+                self.btn_save.setToolTip("Set a background image and select an image to subtract first")
             except Exception as e:
                 self.lbl_img.setText(f"Error: {e}")
                 self.current_difference_img = None
                 self.current_difference_arr = None
                 self.current_difference_arr_raw = None
             return
+
 
         try:
             img_arr = np.array(Image.open(img_path))

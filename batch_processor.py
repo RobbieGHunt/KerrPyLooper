@@ -34,34 +34,100 @@ import threading
 import numpy as np
 from PIL import Image
 import matplotlib
+matplotlib.use("Agg")
 
 # Add script directory to sys.path to ensure gui_styles import works
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import multiprocessing
+
+# Avoid importing PyQt5 inside worker processes to reduce startup overhead
+_is_child = False
 try:
-    from PyQt5.QtWidgets import (
-        QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-        QLabel, QLineEdit, QCheckBox, QFileDialog, QTextEdit, QGroupBox,
-        QComboBox, QSpinBox
-    )
-    from PyQt5.QtCore import Qt, QThread, pyqtSignal
-    from PyQt5.QtGui import QTextCursor
-    from gui_styles import apply_theme
-    HAS_PYQT5 = True
-except ImportError:
+    if hasattr(multiprocessing, "parent_process") and multiprocessing.parent_process() is not None:
+        _is_child = True
+except Exception:
+    pass
+if not _is_child and multiprocessing.current_process().name != "MainProcess":
+    _is_child = True
+
+if _is_child:
     HAS_PYQT5 = False
+else:
+    try:
+        from PyQt5.QtWidgets import (
+            QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
+            QLabel, QLineEdit, QCheckBox, QFileDialog, QTextEdit, QGroupBox,
+            QComboBox, QSpinBox
+        )
+        from PyQt5.QtCore import Qt, QThread, pyqtSignal
+        from PyQt5.QtGui import QTextCursor
+        from gui_styles import apply_theme
+        HAS_PYQT5 = True
+    except ImportError:
+        HAS_PYQT5 = False
 
 # ---------------------------------------------------------------------------
 # Utility helpers (mirror of kerr_looper_AG.py, no GUI dependency)
 # ---------------------------------------------------------------------------
 
-def _parse_txt_file(txt_file: str) -> "pd.DataFrame | None":
+class SeriesWrapper:
+    def __init__(self, values):
+        self.values = values
+    def to_numpy(self, dtype=None):
+        arr = np.array(self.values)
+        if dtype:
+            return arr.astype(dtype)
+        return arr
+    def tolist(self):
+        return list(self.values)
+    @property
+    def str(self):
+        class StrAccessor:
+            def __init__(self, vals):
+                self.vals = vals
+            def strip(self):
+                return SeriesWrapper([v.strip() for v in self.vals])
+        return StrAccessor(self.values)
+    def __len__(self):
+        return len(self.values)
+    def __iter__(self):
+        return iter(self.values)
+
+
+class SimpleDataFrame:
+    def __init__(self, fields, intensities, files):
+        self.fields = np.array(fields, dtype=np.float32)
+        self.intensities = np.array(intensities, dtype=np.float32)
+        self.files = files
+        
+    def __getitem__(self, key):
+        if key == "Field":
+            return SeriesWrapper(self.fields)
+        elif key == "Intensity":
+            return SeriesWrapper(self.intensities)
+        elif key == "File":
+            return SeriesWrapper(self.files)
+        raise KeyError(key)
+
+    class Row:
+        def __init__(self, field, intensity, file):
+            self.Field = field
+            self.Intensity = intensity
+            self.File = file
+
+    def itertuples(self, index=False):
+        return [self.Row(f, i, fn) for f, i, fn in zip(self.fields, self.intensities, self.files)]
+
+    def __len__(self):
+        return len(self.files)
+
+
+def _parse_txt_file(txt_file: str) -> "SimpleDataFrame | None":
     """
     Attempt to read and parse a single text file into a structured DataFrame.
     Returns the formatted DataFrame if valid, otherwise None.
     """
-    import pandas as pd
-
     # Skip empty files
     if os.path.getsize(txt_file) == 0:
         return None
@@ -72,30 +138,29 @@ def _parse_txt_file(txt_file: str) -> "pd.DataFrame | None":
     if ".png" not in head.lower():
         return None
 
-    # Attempt to read as structured data
-    df = pd.read_csv(txt_file, sep=None, engine="python",
-                     comment="#", skip_blank_lines=True)
-    df.columns = [str(c).strip() for c in df.columns]
+    fields = []
+    intensities = []
+    files = []
+    
+    with open(txt_file, 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            # Split by whitespace/tabs
+            parts = [p.strip() for p in line.split() if p.strip()]
+            if len(parts) >= 3 and parts[2].lower().endswith('.png'):
+                try:
+                    f_val = float(parts[0])
+                    i_val = float(parts[1])
+                    fields.append(f_val)
+                    intensities.append(i_val)
+                    files.append(parts[2])
+                except ValueError:
+                    continue
 
-    if len(df.columns) < 3:
-        return None
-
-    # Check if the third column has ".png" indicating it's the correct file
-    df_filtered = df[df[df.columns[2]].astype(str).str.strip().str.lower().str.endswith(".png", na=False)]
-
-    if len(df_filtered) >= 3:
-        # We found the valid data file
-        df = df_filtered.rename(columns={
-            df.columns[0]: "Field",
-            df.columns[1]: "Intensity",
-            df.columns[2]: "File",
-        }).reset_index(drop=True)
-        df["Field"] = pd.to_numeric(df["Field"], errors="coerce")
-        df["Intensity"] = pd.to_numeric(df["Intensity"], errors="coerce")
-        df = df.dropna(subset=["Field", "Intensity"])
-
-        if len(df) >= 3:
-            return df
+    if len(files) >= 3:
+        return SimpleDataFrame(fields, intensities, files)
 
     return None
 
@@ -137,6 +202,18 @@ def find_background_image(data_dir: str, image_files: list) -> str | None:
     return image_files[0] if image_files else None
 
 
+def pil_to_numpy_fast(img) -> np.ndarray:
+    """
+    Fast conversion of PIL Image to numpy array using direct buffer access when possible.
+    """
+    mode = img.mode
+    if mode == "I;16":
+        return np.frombuffer(img.tobytes(), dtype=np.uint16).reshape(img.height, img.width)
+    elif mode == "L":
+        return np.frombuffer(img.tobytes(), dtype=np.uint8).reshape(img.height, img.width)
+    return np.array(img)
+
+
 def run_subtraction_loop(data_dir: str, txt_df: "pd.DataFrame",
                          background_array: np.ndarray,
                          print_func=print,
@@ -156,13 +233,12 @@ def run_subtraction_loop(data_dir: str, txt_df: "pd.DataFrame",
             raise InterruptedError("Batch run cancelled by user")
         img_file = row.File.strip()
         img_path = os.path.join(data_dir, img_file)
-        if not os.path.exists(img_path):
-            means.append(np.nan)
-            continue
         try:
-            img_arr = np.array(Image.open(img_path))
+            img_arr = pil_to_numpy_fast(Image.open(img_path))
             mean_val = compute_subtracted_mean(img_arr, bg_cropped_f32, crop_func=crop_batch)
             means.append(mean_val)
+        except FileNotFoundError:
+            means.append(np.nan)
         except Exception as exc:
             print_func(f"  [warn] Error processing {img_file}: {exc}")
             means.append(np.nan)
@@ -383,6 +459,43 @@ def extract_step_number(dir_name: str):
     return int(m.group(1)) if m else None
 
 
+def discover_data_dirs(parent_dir: str) -> list:
+    """
+    Recursively scan parent_dir (up to a depth of 3 subfolders) to find all
+    directories that contain a valid MOKE dataset (i.e. at least one .txt file).
+    Returns a sorted list of absolute directory paths.
+    """
+    valid_dirs = []
+    parent_dir = os.path.abspath(parent_dir)
+    
+    for root, dirs, files in os.walk(parent_dir):
+        # Calculate current depth relative to parent_dir
+        rel_path = os.path.relpath(root, parent_dir)
+        if rel_path == ".":
+            depth = 0
+        else:
+            depth = len(rel_path.split(os.sep))
+            
+        # Limit traversal depth to 3
+        if depth > 3:
+            dirs[:] = []
+            continue
+            
+        # Ignore the "Analysis" directory
+        if os.path.basename(root).lower() == "analysis":
+            dirs[:] = []
+            continue
+            
+        # Check if the directory has a valid MOKE txt data file
+        if any(f.lower().endswith(".txt") for f in files):
+            if load_txt_data(root) is not None:
+                valid_dirs.append(root)
+                # Do not descend further into subfolders of a valid data folder
+                dirs[:] = []
+                
+    return sorted(valid_dirs)
+
+
 # ---------------------------------------------------------------------------
 # Plotting helpers
 # ---------------------------------------------------------------------------
@@ -592,7 +705,7 @@ def save_full_summary(results: list, analysis_dir: str):
 # Main batch routine
 # ---------------------------------------------------------------------------
 
-def process_directory(data_dir: str, analysis_dir: str,
+def process_directory(data_dir: str, analysis_dir: str, dir_name: str,
                       drift_corr: bool = True, linear_corr: bool = True,
                       quad_corr: bool = True,
                       print_func=print,
@@ -601,7 +714,6 @@ def process_directory(data_dir: str, analysis_dir: str,
     Process one data sub-directory.  Returns a result dict on success,
     or None on failure (missing data / images).
     """
-    dir_name = os.path.basename(data_dir)
     print_func(f"\nProcessing: {dir_name}")
 
     # ---- Load .txt data file ----
@@ -618,22 +730,24 @@ def process_directory(data_dir: str, analysis_dir: str,
         if f.lower().endswith((".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"))
     ])
 
+    # ---- Select background image ----
+    # Check if mask.png exists in data_dir first (GUI behavior)
+    all_files = os.listdir(data_dir)
+    bg_name = next((f for f in all_files if f.lower() == "mask.png"), None)
+
     # Filter image_files to only those listed in the .txt file
     valid_files = set(txt_df["File"].str.strip().tolist())
     image_files = [f for f in image_files if f in valid_files]
 
-    if not image_files:
-        print_func(f"  [skip] No image files found.")
-        return None
+    if bg_name is None:
+        bg_name = find_background_image(data_dir, image_files)
 
-    # ---- Select background image ----
-    bg_name = find_background_image(data_dir, image_files)
     if bg_name is None:
         print_func(f"  [skip] Could not find a background image.")
         return None
     bg_path = os.path.join(data_dir, bg_name)
     try:
-        background_array = np.array(Image.open(bg_path))
+        background_array = pil_to_numpy_fast(Image.open(bg_path))
         print_func(f"  Background: {bg_name}")
     except Exception as exc:
         print_func(f"  [skip] Failed to load background image {bg_name}: {exc}")
@@ -676,17 +790,6 @@ def process_directory(data_dir: str, analysis_dir: str,
     print_func(f"  Hc+ = {_fmt(hc_pos)} mT, Hc- = {_fmt(hc_neg)} mT, Hc = {_fmt(hc_avg)} mT")
     print_func(f"  Hr(asc) = {_fmt(hr_asc)}, Hr(desc) = {_fmt(hr_desc)}, |Hr| = {_fmt(hr_abs)}")
 
-    # ---- Save outputs ----
-    safe_name = re.sub(r"[^\w\-]", "_", dir_name)  # filesystem-safe
-    loop_img_path  = os.path.join(analysis_dir, f"{safe_name}_loop.png")
-    loop_data_path = os.path.join(analysis_dir, f"{safe_name}_loop.txt")
-
-    save_loop_plot(field, ycorr, hc_hr, title=dir_name, save_path=loop_img_path)
-    save_loop_data(field, raw_intens, ycorr, hc_hr, coeffs,
-                   dir_name=dir_name, save_path=loop_data_path)
-    print_func(f"  [ok] Saved {os.path.basename(loop_img_path)} and "
-          f"{os.path.basename(loop_data_path)}")
-
     # ---- Step detection ----
     step = extract_step_number(dir_name)
     if step is not None:
@@ -701,13 +804,18 @@ def process_directory(data_dir: str, analysis_dir: str,
         hr_asc=hr_asc,
         hr_desc=hr_desc,
         hr_abs=hr_abs,
+        field=field,
+        raw_intens=raw_intens,
+        ycorr=ycorr,
+        hc_hr=hc_hr,
+        coeffs=coeffs,
     )
 
 
 def process_directory_worker(args):
     """
     Worker function for parallel pools.
-    args: tuple of (data_dir, analysis_dir, drift, linear, quad, cancel_event)
+    args: tuple of (data_dir, analysis_dir, dir_name, drift, linear, quad, cancel_event)
     """
     # Set headless backend immediately for worker process
     try:
@@ -716,17 +824,8 @@ def process_directory_worker(args):
     except Exception:
         pass
 
-    data_dir, analysis_dir, drift, linear, quad, cancel_event = args
-    dir_name = os.path.basename(data_dir)
+    data_dir, analysis_dir, dir_name, drift, linear, quad, cancel_event = args
     log_lines = []
-    
-    # Touch a temporary status file to provide immediate UI feedback in Process Mode
-    status_file = os.path.join(analysis_dir, f".status_{dir_name}.running")
-    try:
-        with open(status_file, 'w') as f:
-            f.write("1")
-    except Exception:
-        pass
     
     def buffered_print(*msg_args, **kwargs):
         sep = kwargs.get('sep', ' ')
@@ -735,21 +834,15 @@ def process_directory_worker(args):
         
     try:
         result = process_directory(
-            data_dir, analysis_dir,
+            data_dir, analysis_dir, dir_name,
             drift_corr=drift, linear_corr=linear, quad_corr=quad,
             print_func=buffered_print, cancel_event=cancel_event
         )
         return result, log_lines, None
     except Exception as exc:
         import traceback
-        err_str = f"Error processing {os.path.basename(data_dir)}: {exc}\n{traceback.format_exc()}"
+        err_str = f"Error processing {dir_name}: {exc}\n{traceback.format_exc()}"
         return None, log_lines, err_str
-    finally:
-        try:
-            if os.path.exists(status_file):
-                os.remove(status_file)
-        except Exception:
-            pass
 
 
 
@@ -758,10 +851,12 @@ def _run_batch_processes(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_c
     import time
 
     # Prepare arguments (cancel_event is None for processes, we use pool.terminate())
-    tasks = [
-        (d, analysis_dir, drift_corr, linear_corr, quad_corr, None)
-        for d in sub_dirs
-    ]
+    parent_dir = os.path.dirname(analysis_dir)
+    tasks = []
+    for d in sub_dirs:
+        rel_path = os.path.relpath(d, parent_dir)
+        dir_name = rel_path.replace(os.sep, "_")
+        tasks.append((d, analysis_dir, dir_name, drift_corr, linear_corr, quad_corr, None))
 
     num_procs = max_workers if max_workers else max(1, multiprocessing.cpu_count() - 1)
     print(f"\n[info] Spinning up background processes... (This usually takes 5-10 seconds on Windows)")
@@ -774,27 +869,18 @@ def _run_batch_processes(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_c
     try:
         pending = []
         for i, task in enumerate(tasks):
-            dir_name = os.path.basename(task[0])
+            dir_name = task[2]
             print(f"[{i+1}/{total_dirs}] Queued: {dir_name}")
             res = pool.apply_async(process_directory_worker, (task,))
             pending.append((dir_name, res))
 
         completed = 0
-        running_reported = set()
         while pending:
             if cancel_event is not None and cancel_event.is_set():
                 print("\n[info] Cancellation detected in run_batch. Terminating process pool...")
                 pool.terminate()
                 pool.join()
                 return
-
-            # Poll status files to provide immediate feedback for Multi-processed mode
-            for dir_name, _ in pending:
-                if dir_name not in running_reported:
-                    status_file = os.path.join(analysis_dir, f".status_{dir_name}.running")
-                    if os.path.exists(status_file):
-                        print(f"  -> Started processing: {dir_name}")
-                        running_reported.add(dir_name)
 
             still_pending = []
             for dir_name, res in pending:
@@ -814,7 +900,7 @@ def _run_batch_processes(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_c
                 else:
                     still_pending.append((dir_name, res))
             pending = still_pending
-            time.sleep(0.1)
+            time.sleep(0.05)
 
         pool.close()
         pool.join()
@@ -829,10 +915,12 @@ def _run_batch_threads(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_cor
     import concurrent.futures
     import time
 
-    tasks = [
-        (d, analysis_dir, drift_corr, linear_corr, quad_corr, cancel_event)
-        for d in sub_dirs
-    ]
+    parent_dir = os.path.dirname(analysis_dir)
+    tasks = []
+    for d in sub_dirs:
+        rel_path = os.path.relpath(d, parent_dir)
+        dir_name = rel_path.replace(os.sep, "_")
+        tasks.append((d, analysis_dir, dir_name, drift_corr, linear_corr, quad_corr, cancel_event))
 
     num_threads = max_workers if max_workers else max(1, os.cpu_count() - 1)
     print(f"Starting Thread Pool with {num_threads} workers...")
@@ -844,7 +932,7 @@ def _run_batch_threads(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_cor
     try:
         futures = {}
         for i, task in enumerate(tasks):
-            dir_name = os.path.basename(task[0])
+            dir_name = task[2]
             print(f"[{i+1}/{total_dirs}] Queued: {dir_name}")
             f = executor.submit(process_directory_worker, task)
             futures[f] = dir_name
@@ -894,14 +982,16 @@ def _run_batch_threads(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_cor
 
 def _run_batch_sequential(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, cancel_event, results, total_dirs):
     print("Starting Sequential execution...")
+    parent_dir = os.path.dirname(analysis_dir)
     for i, data_dir in enumerate(sub_dirs):
         if cancel_event is not None and cancel_event.is_set():
             print("\n[info] Cancellation detected. Halting sequential batch...")
             return
-        dir_name = os.path.basename(data_dir)
+        rel_path = os.path.relpath(data_dir, parent_dir)
+        dir_name = rel_path.replace(os.sep, "_")
         print(f"[{i+1}/{total_dirs}] Processing: {dir_name}")
 
-        task = (data_dir, analysis_dir, drift_corr, linear_corr, quad_corr, cancel_event)
+        task = (data_dir, analysis_dir, dir_name, drift_corr, linear_corr, quad_corr, cancel_event)
         result, log_lines, err_str = process_directory_worker(task)
 
         print(f"\n--- Log for {dir_name} [{i+1}/{total_dirs}] ---")
@@ -929,12 +1019,7 @@ def run_batch(parent_dir: str, drift_corr: bool = True, linear_corr: bool = True
     print(f"{'='*60}")
 
     # ---- Discover sub-directories ----
-    sub_dirs = sorted([
-        os.path.join(parent_dir, d)
-        for d in os.listdir(parent_dir)
-        if os.path.isdir(os.path.join(parent_dir, d))
-        and d.lower() != "analysis"   # don't process our own output
-    ])
+    sub_dirs = discover_data_dirs(parent_dir)
 
     if not sub_dirs:
         print("[error] No sub-directories found in the selected folder.")
@@ -955,6 +1040,37 @@ def run_batch(parent_dir: str, drift_corr: bool = True, linear_corr: bool = True
         _run_batch_threads(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, max_workers, cancel_event, thread_ref, results, total_dirs)
     else:  # sequential mode
         _run_batch_sequential(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, cancel_event, results, total_dirs)
+
+    # ---- Sequential Post-Processing (Saving plots & data files) ----
+    if results:
+        print(f"\nSaving individual loop plots and text files to {analysis_dir}...")
+        for r in results:
+            dir_name = r["dir_name"]
+            field = r["field"]
+            raw_intens = r["raw_intens"]
+            ycorr = r["ycorr"]
+            hc_hr = r["hc_hr"]
+            coeffs = r["coeffs"]
+            
+            safe_name = re.sub(r"[^\w\-]", "_", dir_name)
+            loop_img_path  = os.path.join(analysis_dir, f"{safe_name}_loop.png")
+            loop_data_path = os.path.join(analysis_dir, f"{safe_name}_loop.txt")
+            
+            try:
+                save_loop_plot(field, ycorr, hc_hr, title=dir_name, save_path=loop_img_path)
+                save_loop_data(field, raw_intens, ycorr, hc_hr, coeffs,
+                               dir_name=dir_name, save_path=loop_data_path)
+                print(f"  [ok] Saved {os.path.basename(loop_img_path)} and {os.path.basename(loop_data_path)}")
+            except Exception as exc:
+                print(f"  [ERROR] Failed to save output files for {dir_name}: {exc}")
+
+        # ---- Compile Summary Files ----
+        print("\nCompiling summary charts and tables...")
+        try:
+            save_summary_plots(results, analysis_dir)
+            save_full_summary(results, analysis_dir)
+        except Exception as exc:
+            print(f"  [ERROR] Failed to save summary outputs: {exc}")
 
     elapsed_total = time.time() - start_time
     print(f"\nAll processing tasks completed in {elapsed_total:.2f} seconds.")
