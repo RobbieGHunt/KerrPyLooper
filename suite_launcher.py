@@ -68,6 +68,15 @@ TOOL_REGISTRY = [
         "script": "drift_corrector.py",
         "icon": "⚓",
         "prompt_directory": False,
+    },
+    {
+        "id": "hc_map",
+        "name": "Local Hc Map",
+        "subtitle": "Spatially Resolved Coercivity",
+        "description": "Generate a 2D spatial map of local coercivity (Hc) across the field of view by fitting the hysteresis loop for every single pixel or binned region. Useful for analyzing defect pinning and material homogeneity.",
+        "script": "hc_map_tool.py",
+        "icon": "🗺️",
+        "prompt_directory": False,
     }
 ]
 
@@ -493,6 +502,7 @@ class SuiteLauncherWindow(QMainWindow):
         self.active_batch_window = None
         self.active_vector_window = None
         self.active_drift_window = None
+        self.active_hc_map_window = None
         self.init_ui()
         
     def init_ui(self):
@@ -629,6 +639,8 @@ class SuiteLauncherWindow(QMainWindow):
             self.active_vector_window.change_theme(self.current_theme)
         if self.active_drift_window is not None:
             self.active_drift_window.change_theme(self.current_theme)
+        if self.active_hc_map_window is not None:
+            self.active_hc_map_window.change_theme(self.current_theme)
             
     def log(self, text):
         """Append text to the console output text widget."""
@@ -768,6 +780,36 @@ class SuiteLauncherWindow(QMainWindow):
                     self.log(traceback.format_exc())
                     QMessageBox.critical(self, "Error", f"Failed to launch Drift Corrector:\n{e}")
             return
+        elif tool_config["id"] == "hc_map":
+            if self.active_hc_map_window is not None:
+                self.active_hc_map_window.show()
+                self.active_hc_map_window.raise_()
+                self.active_hc_map_window.activateWindow()
+                self.log("[Info] Brought active Local Hc Map window to focus.")
+            else:
+                self.log("[Info] Launching Local Hc Map in same process...")
+                try:
+                    from hc_map_tool import HcMapGUI
+                    window = HcMapGUI(theme=self.current_theme)
+
+                    # Intercept closeEvent to clear reference
+                    orig_close = window.closeEvent
+                    def custom_close(event):
+                        orig_close(event)
+                        if event.isAccepted():
+                            self.active_hc_map_window = None
+                            self.log("[Info] Local Hc Map window closed.")
+                    window.closeEvent = custom_close
+
+                    self.active_hc_map_window = window
+                    window.show()
+                    self.log("[Info] Local Hc Map launched successfully.")
+                except Exception as e:
+                    self.log(f"[Error] Failed to launch Local Hc Map: {e}")
+                    import traceback
+                    self.log(traceback.format_exc())
+                    QMessageBox.critical(self, "Error", f"Failed to launch Local Hc Map:\n{e}")
+            return
 
         if self.current_process is not None:
             QMessageBox.warning(
@@ -901,6 +943,8 @@ class SuiteLauncherWindow(QMainWindow):
                     self.active_vector_window.close()
                 if self.active_drift_window is not None:
                     self.active_drift_window.close()
+                if self.active_hc_map_window is not None:
+                    self.active_hc_map_window.close()
                 event.accept()
             else:
                 event.ignore()
@@ -913,6 +957,8 @@ class SuiteLauncherWindow(QMainWindow):
                 self.active_vector_window.close()
             if self.active_drift_window is not None:
                 self.active_drift_window.close()
+            if self.active_hc_map_window is not None:
+                self.active_hc_map_window.close()
             event.accept()
 
 
