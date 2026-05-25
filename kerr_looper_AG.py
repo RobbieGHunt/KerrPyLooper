@@ -2554,13 +2554,15 @@ class MOKEImageSubtractor(QWidget):
 
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
+            means = []
             # ⚡ Bolt: Use itertuples instead of iterrows for much faster iteration
             for row in self.txt_data.itertuples(index=True):
                 idx = row.Index
                 img_file = row.File.strip()
                 img_path = os.path.join(self.img_dir, img_file)
                 if not os.path.exists(img_path):
-                    return np.nan
+                    means.append(np.nan)
+                    continue
                 try:
                     img_arr = np.array(Image.open(img_path))
                     field = row.Field if enable_z else 0.0
@@ -2569,15 +2571,10 @@ class MOKEImageSubtractor(QWidget):
                         enable_z=enable_z, coeff=coeff, method_idx=method_idx, field=field,
                         enable_roi=enable_roi, roi_shape=roi_shape, roi_data=roi_data
                     )
-                    return mean_val
+                    means.append(mean_val)
                 except Exception as e:
                     print(f"Error processing {img_file}: {e}")
-                    return np.nan
-
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                means = list(
-                    executor.map(process_row, self.txt_data.itertuples(index=False))
-                )
+                    means.append(np.nan)
 
             self.last_loop_was_roi = enable_roi
             self.loop_intens_subtracted = np.array(means, dtype=np.float32)
