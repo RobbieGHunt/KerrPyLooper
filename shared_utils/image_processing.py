@@ -1,5 +1,4 @@
 import numpy as np
-import scipy.ndimage as ndimage
 import math
 
 def crop(arr, max_h=600, max_w=900, center_w=True):
@@ -240,6 +239,7 @@ def compute_subtracted_mean(img_arr, bg_base, enable_z=False, coeff=0.0, method_
         bg_arr = bg_base
 
     if enable_z:
+        import scipy.ndimage as ndimage
         sigma = coeff * (field ** 2)
         if sigma > 0.05:
             if method_idx == 0:
@@ -262,18 +262,23 @@ def compute_subtracted_mean(img_arr, bg_base, enable_z=False, coeff=0.0, method_
                     img_deblurred = wiener_deconvolve(img_arr.astype(np.float64), sigma=sigma)
                     img_arr = np.clip(img_deblurred, 0, max_val).astype(orig_dtype)
 
-    min_shape = tuple(min(sa, sb) for sa, sb in zip(img_arr.shape, bg_arr.shape))
-    if img_arr.ndim == 3:
-        img_c = img_arr[:min_shape[0], :min_shape[1], :min_shape[2]]
-        bg_c = bg_arr[:min_shape[0], :min_shape[1], :min_shape[2]]
+    # Check if shapes are identical to bypass tuple zip/min/slicing overhead
+    if img_arr.shape == bg_arr.shape:
+        # Subtract directly, forcing float32 output by ensuring background is float32 (prevents uint8 underflow)
+        if bg_arr.dtype != np.float32:
+            bg_arr = bg_arr.astype(np.float32)
+        arr_cropped = img_arr - bg_arr
     else:
-        img_c = img_arr[:min_shape[0], :min_shape[1]]
-        bg_c = bg_arr[:min_shape[0], :min_shape[1]]
-    arr = img_c.astype(np.float32) - bg_c.astype(np.float32)
-
-    # Since both img_arr and bg_arr were already cropped using crop_func,
-    # arr is already cropped. No need to crop again.
-    arr_cropped = arr
+        min_shape = tuple(min(sa, sb) for sa, sb in zip(img_arr.shape, bg_arr.shape))
+        if img_arr.ndim == 3:
+            img_c = img_arr[:min_shape[0], :min_shape[1], :min_shape[2]]
+            bg_c = bg_arr[:min_shape[0], :min_shape[1], :min_shape[2]]
+        else:
+            img_c = img_arr[:min_shape[0], :min_shape[1]]
+            bg_c = bg_arr[:min_shape[0], :min_shape[1]]
+        if bg_c.dtype != np.float32:
+            bg_c = bg_c.astype(np.float32)
+        arr_cropped = img_c - bg_c
 
     # Store raw subtraction (do not bake the correction in)
     if enable_roi:
