@@ -100,6 +100,133 @@ def get_roi_mean(arr, shape_type, roi_data):
 
     return np.mean(arr)
 
+import concurrent.futures
+
+def extract_hc_from_loop(field, intensity):
+    """Robustly extract global Hc from a single loop."""
+    if len(field) < 2 or len(intensity) < 2:
+        return np.nan
+
+    i_min = np.argmin(field)
+    i_max = np.argmax(field)
+
+    if i_min < i_max:
+        asc_idx = list(range(i_min, i_max + 1))
+        desc_idx = list(range(i_max, len(field))) + list(range(0, i_min + 1))
+    else:
+        desc_idx = list(range(i_max, i_min + 1))
+        asc_idx = list(range(i_min, len(field))) + list(range(0, i_max + 1))
+
+    f_asc = field[asc_idx]
+    y_asc = intensity[asc_idx]
+    sort_asc = np.argsort(f_asc)
+    f_asc = f_asc[sort_asc]
+    y_asc = y_asc[sort_asc]
+
+    f_desc = field[desc_idx]
+    y_desc = intensity[desc_idx]
+    sort_desc = np.argsort(f_desc)
+    f_desc = f_desc[sort_desc]
+    y_desc = y_desc[sort_desc]
+
+    field_off = field - np.mean(field)
+    field_abs_max = np.max(np.abs(field_off))
+
+    if field_abs_max == 0:
+        return np.nan
+
+    sat_mask_pos = field_off > (0.8 * field_abs_max)
+    sat_mask_neg = field_off < (-0.8 * field_abs_max)
+
+    sat_pos = np.mean(intensity[sat_mask_pos]) if np.sum(sat_mask_pos) > 0 else intensity[i_max]
+    sat_neg = np.mean(intensity[sat_mask_neg]) if np.sum(sat_mask_neg) > 0 else intensity[i_min]
+    mid = 0.5 * (sat_pos + sat_neg)
+
+    def find_crossings(f_branch, y_branch, mid_level):
+        crossings = []
+        for i in range(len(f_branch) - 1):
+            y0, y1 = y_branch[i], y_branch[i+1]
+            f0, f1 = f_branch[i], f_branch[i+1]
+            if (y0 - mid_level) * (y1 - mid_level) <= 0 and y0 != y1:
+                frac = (mid_level - y0) / (y1 - y0)
+                f_cross = f0 + frac * (f1 - f0)
+                crossings.append((f_cross, abs(y1 - y0)))
+        return crossings
+
+    crossings_asc = find_crossings(f_asc, y_asc, mid)
+    crossings_desc = find_crossings(f_desc, y_desc, mid)
+
+    hc_pos = None
+    if crossings_asc:
+        crossings_asc.sort(key=lambda x: x[1], reverse=True)
+        hc_pos = crossings_asc[0][0]
+    elif len(f_asc) > 0:
+        hc_pos = f_asc[np.argmin(np.abs(y_asc - mid))]
+
+    hc_neg = None
+    if crossings_desc:
+        crossings_desc.sort(key=lambda x: x[1], reverse=True)
+        hc_neg = crossings_desc[0][0]
+    elif len(f_desc) > 0:
+        hc_neg = f_desc[np.argmin(np.abs(y_desc - mid))]
+
+    if hc_pos is not None and hc_neg is not None:
+        return (abs(hc_pos) + abs(hc_neg)) / 2.0
+    elif hc_pos is not None:
+        return abs(hc_pos)
+    elif hc_neg is not None:
+        return abs(hc_neg)
+    return np.nan
+
+
+def calculate_local_hc(img_stack, field, bin_size=4):
+    """
+    Calculate spatially resolved local coercivity mapping.
+    img_stack: (N_images, H, W) float32 array
+    field: (N_images,) array
+    bin_size: integer for downsampling/binning
+    """
+    N, H, W = img_stack.shape
+
+    # Subsample or bin the image stack
+    # For speed, we just slice. For better SNR we could mean pool.
+    # We will slice to keep it simple and fast.
+    binned_stack = img_stack[:, ::bin_size, ::bin_size]
+
+    b_H, b_W = binned_stack.shape[1], binned_stack.shape[2]
+
+    # Pre-allocate output map based on exact sliced dimensions
+    hc_map = np.zeros((b_H, b_W), dtype=np.float32)
+
+    # Prepare arguments for multiprocessing
+    def process_pixel(r, c):
+        intensity = binned_stack[:, r, c]
+
+        # Very basic background subtraction using zero-field image
+        zero_idx = np.argmin(np.abs(field))
+        intensity = intensity - intensity[zero_idx]
+
+        # Calculate Hc
+        return r, c, extract_hc_from_loop(field, intensity)
+
+    # Execute in parallel
+    coords = [(r, c) for r in range(b_H) for c in range(b_W)]
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        results = list(executor.map(lambda args: process_pixel(*args), coords))
+
+    for r, c, hc in results:
+        hc_map[r, c] = hc
+
+    # Upsample back to original size for display
+    hc_map_full = np.zeros((H, W), dtype=np.float32)
+    for r in range(b_H):
+        for c in range(b_W):
+            hc_map_full[r*bin_size:(r+1)*bin_size, c*bin_size:(c+1)*bin_size] = hc_map[r, c]
+
+    return hc_map_full
+
+
 def compute_subtracted_mean(img_arr, bg_base, enable_z=False, coeff=0.0, method_idx=0, field=0.0, enable_roi=False, roi_shape="None", roi_data=None, crop_func=crop600):
     # Crop target first to prevent metadata ringing & optimize speed
     img_arr = crop_func(img_arr)
