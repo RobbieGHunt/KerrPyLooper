@@ -5,6 +5,14 @@ from drift_corrector import DriftCorrectorWindow
 import numpy as np
 import pandas as pd
 from PIL import Image
+import os
+import shutil
+
+# Setup output dir
+out_dir = "example3_vector/x_drift_corrected"
+if os.path.exists(out_dir):
+    shutil.rmtree(out_dir)
+os.makedirs(out_dir, exist_ok=True)
 
 app = QApplication(sys.argv)
 dc = DriftCorrectorWindow()
@@ -49,7 +57,31 @@ class MockTabs:
     def setCurrentIndex(self, i): pass
 dc.preview_tabs = MockTabs()
 
+# Mock crop bounds which are computed by _recompute_crop_bounds
+dc.crop_top = 0
+dc.crop_bottom = 0
+dc.crop_left = 0
+dc.crop_right = 0
+
+# Override QFileDialog
+from PyQt5.QtWidgets import QFileDialog
+def mock_getExistingDirectory(*args, **kwargs):
+    return out_dir
+QFileDialog.getExistingDirectory = mock_getExistingDirectory
+
+print("Running estimation...")
 start = time.time()
 dc._run_estimation()
-end = time.time()
-print(f"Estimation time: {end - start:.2f}s")
+print(f"Estimation time: {time.time() - start:.2f}s")
+
+print("Running save...")
+start = time.time()
+dc._save_corrected()
+print(f"Save time: {time.time() - start:.2f}s")
+
+files = os.listdir(out_dir)
+print(f"Saved {len(files)} files to {out_dir}")
+if len(files) > 0:
+    print(f"First file: {files[0]}")
+    arr_saved = np.array(Image.open(os.path.join(out_dir, files[0])))
+    print(f"Image shape: {arr_saved.shape}")

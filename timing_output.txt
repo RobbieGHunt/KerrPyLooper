@@ -1,0 +1,2 @@
+QStandardPaths: XDG_RUNTIME_DIR not set, defaulting to '/tmp/runtime-jules'
+This plugin does not support propagateSizeHints()
