@@ -77,6 +77,15 @@ TOOL_REGISTRY = [
         "script": "hc_map_tool.py",
         "icon": "🗺️",
         "prompt_directory": False,
+    },
+    {
+        "id": "dmdh_mapper",
+        "name": "dM/dH Mapper",
+        "subtitle": "Pinning Landscape Analysis",
+        "description": "Calculate differential magnetization (dM/dH) to visualize domain wall pinning sites and create a complete 2D Iso-switching topographical map of the coercive landscape.",
+        "script": "dmdh_tool.py",
+        "icon": "🏔️",
+        "prompt_directory": False,
     }
 ]
 
@@ -635,6 +644,7 @@ class SuiteLauncherWindow(QMainWindow):
         self.active_vector_window = None
         self.active_drift_window = None
         self.active_hc_map_window = None
+        self.active_dmdh_window = None
         self.init_ui()
         
     def init_ui(self):
@@ -780,6 +790,9 @@ class SuiteLauncherWindow(QMainWindow):
         if self.active_hc_map_window is not None:
             self.active_hc_map_window.change_theme(self.current_theme)
             self.active_hc_map_window.setWindowIcon(get_magnetic_icon(self.current_theme))
+        if self.active_dmdh_window is not None:
+            self.active_dmdh_window.change_theme(self.current_theme)
+            self.active_dmdh_window.setWindowIcon(get_magnetic_icon(self.current_theme))
             
     def log(self, text):
         """Append text to the console output text widget."""
@@ -954,6 +967,37 @@ class SuiteLauncherWindow(QMainWindow):
                     self.log(traceback.format_exc())
                     QMessageBox.critical(self, "Error", f"Failed to launch Local Hc Map:\n{e}")
             return
+        elif tool_config["id"] == "dmdh_mapper":
+            if self.active_dmdh_window is not None:
+                self.active_dmdh_window.show()
+                self.active_dmdh_window.raise_()
+                self.active_dmdh_window.activateWindow()
+                self.log("[Info] Brought active dM/dH Mapper window to focus.")
+            else:
+                self.log("[Info] Launching dM/dH Mapper in same process...")
+                try:
+                    from dmdh_tool import DmdhGUI
+                    window = DmdhGUI(theme=self.current_theme)
+                    window.setWindowIcon(get_magnetic_icon(self.current_theme))
+
+                    # Intercept closeEvent to clear reference
+                    orig_close = window.closeEvent
+                    def custom_close(event):
+                        orig_close(event)
+                        if event.isAccepted():
+                            self.active_dmdh_window = None
+                            self.log("[Info] dM/dH Mapper window closed.")
+                    window.closeEvent = custom_close
+
+                    self.active_dmdh_window = window
+                    window.show()
+                    self.log("[Info] dM/dH Mapper launched successfully.")
+                except Exception as e:
+                    self.log(f"[Error] Failed to launch dM/dH Mapper: {e}")
+                    import traceback
+                    self.log(traceback.format_exc())
+                    QMessageBox.critical(self, "Error", f"Failed to launch dM/dH Mapper:\n{e}")
+            return
 
         if self.current_process is not None:
             QMessageBox.warning(
@@ -1089,6 +1133,8 @@ class SuiteLauncherWindow(QMainWindow):
                     self.active_drift_window.close()
                 if self.active_hc_map_window is not None:
                     self.active_hc_map_window.close()
+                if self.active_dmdh_window is not None:
+                    self.active_dmdh_window.close()
                 event.accept()
             else:
                 event.ignore()
@@ -1103,6 +1149,8 @@ class SuiteLauncherWindow(QMainWindow):
                 self.active_drift_window.close()
             if self.active_hc_map_window is not None:
                 self.active_hc_map_window.close()
+            if self.active_dmdh_window is not None:
+                self.active_dmdh_window.close()
             event.accept()
 
 
