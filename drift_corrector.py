@@ -33,6 +33,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QBrush, QFont
 from PyQt5.QtCore import Qt, QRect, QPoint, pyqtSignal, QSize, QRectF, QPointF
 import scipy.ndimage as ndimage
+from scipy.signal import fftconvolve
 from PIL import Image
 import pandas as pd
 import matplotlib as mpl
@@ -148,21 +149,42 @@ def estimate_shift_sqdiff(ref_patch_grad, target_img_grad, roi_r, roi_c, patch_h
 
     ncc_map = np.full((len(dy_vals), len(dx_vals)), float('inf'), dtype=np.float32)
 
-    for i, dy in enumerate(dy_vals):
-        for j, dx in enumerate(dx_vals):
-            # Sample the target patch at (roi_r+dy, roi_c+dx)
-            r0 = roi_r + dy
-            c0 = roi_c + dx
-            r1 = r0 + patch_h
-            c1 = c0 + patch_w
+    # ⚡ Bolt: Fast exact template matching via FFT convolution
+    # Calculate bounding box for valid shifts to avoid out-of-bounds sampling
+    dy_min = max(-sw, -roi_r)
+    dy_max = min(sw, img_h - roi_r - patch_h)
+    dx_min = max(-sw, -roi_c)
+    dx_max = min(sw, img_w - roi_c - patch_w)
 
-            # Bounds check
-            if r0 < 0 or c0 < 0 or r1 > img_h or c1 > img_w:
-                continue
+    if dy_min > dy_max or dx_min > dx_max:
+        return 0.0, 0.0, ncc_map
 
-            tgt_patch = target_img_grad[r0:r1, c0:c1]
-            diff = ref_patch_grad.astype(np.float32) - tgt_patch.astype(np.float32)
-            ncc_map[i, j] = float(np.sum(diff ** 2))
+    # Extract the full valid search region containing all overlapping patches
+    r_start = roi_r + dy_min
+    r_end = roi_r + dy_max + patch_h
+    c_start = roi_c + dx_min
+    c_end = roi_c + dx_max + patch_w
+
+    search_region = target_img_grad[r_start:r_end, c_start:c_end].astype(np.float32)
+    ref = ref_patch_grad.astype(np.float32)
+
+    # Expand SQDIFF (A-B)^2 = A^2 - 2AB + B^2 for O(N log N) frequency-domain matching
+    ref_sq = np.sum(ref ** 2)
+    search_sq = search_region ** 2
+    tgt_sq = fftconvolve(search_sq, np.ones_like(ref), mode='valid')
+    cross_corr = fftconvolve(search_region, ref[::-1, ::-1], mode='valid')
+
+    # Recombine to exact SQDIFF scores and clip near-zero precision errors
+    sqdiff = tgt_sq - 2 * cross_corr + ref_sq
+    sqdiff = np.maximum(sqdiff, 0)
+
+    # Map the valid region back to the (-sw, +sw) array indices
+    i_min = dy_min + sw
+    i_max = dy_max + sw + 1
+    j_min = dx_min + sw
+    j_max = dx_max + sw + 1
+
+    ncc_map[i_min:i_max, j_min:j_max] = sqdiff
 
     # Find integer peak (minimum diff)
     peak_i, peak_j = np.unravel_index(np.argmin(ncc_map), ncc_map.shape)

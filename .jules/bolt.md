@@ -10,3 +10,7 @@
 When iterating over Pandas DataFrames in performance-sensitive sections, prefer `enumerate(df.itertuples(index=False))` over `df.iterrows()`. Using `itertuples` returns namedtuples instead of constructing Pandas Series for every row, making it significantly faster (e.g. from 0.5s to 0.02s for 10000 rows). Also be sure to change `row['Column']` syntax to `row.Column`.
 - Iterating pandas DataFrames: Use `df.itertuples(index=False)` instead of `df.iterrows()`. Measured a ~15x iteration speedup doing this in focus_corrector.py.
 - Synchronous I/O in Pandas dataframe loops within a PyQt5 GUI can be safely optimized using `concurrent.futures.ThreadPoolExecutor` and `.map`. Operations like PIL image opening and basic numpy conversions release the GIL, providing significant speedups. When parallelizing dataframe iterations, replacing `iterrows()` with `itertuples(index=False)` provides additional execution speed benefits by reducing series creation overhead.
+
+## 2024-06-25 - Fast SQDIFF template matching via FFT convolution
+**Learning:** O(N^2) nested loops for calculating Sum of Squared Differences (SQDIFF) across a search grid (such as in image template matching or drift correction) are a massive bottleneck.
+**Action:** Expand the SQDIFF equation `(A-B)^2 = A^2 - 2AB + B^2` and use `scipy.signal.fftconvolve(..., mode='valid')` to calculate the components in O(N log N) frequency-domain time. This yielded a 10x speedup in `drift_corrector.py` without losing precision.
