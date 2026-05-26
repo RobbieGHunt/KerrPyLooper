@@ -178,7 +178,7 @@ def extract_hc_from_loop(field, intensity):
     return np.nan
 
 
-def calculate_local_hc(img_stack, field, bin_size=4):
+def calculate_local_hc(img_stack, field, bin_size=4, return_hr=False, apply_corrections=True):
     """
     Calculate spatially resolved local coercivity mapping.
     img_stack: (N_images, H, W) float32 array
@@ -188,42 +188,205 @@ def calculate_local_hc(img_stack, field, bin_size=4):
     N, H, W = img_stack.shape
 
     # Subsample or bin the image stack
-    # For speed, we just slice. For better SNR we could mean pool.
-    # We will slice to keep it simple and fast.
     binned_stack = img_stack[:, ::bin_size, ::bin_size]
-
     b_H, b_W = binned_stack.shape[1], binned_stack.shape[2]
+    P = b_H * b_W
 
-    # Pre-allocate output map based on exact sliced dimensions
-    hc_map = np.zeros((b_H, b_W), dtype=np.float32)
+    # Flatten spatial dimensions to (N, P)
+    flat_stack = binned_stack.reshape(N, P)
 
-    # Prepare arguments for multiprocessing
-    def process_pixel(r, c):
-        intensity = binned_stack[:, r, c]
+    # Background subtraction
+    zero_idx = np.argmin(np.abs(field))
+    flat_stack = flat_stack - flat_stack[zero_idx, :]
 
-        # Very basic background subtraction using zero-field image
-        zero_idx = np.argmin(np.abs(field))
-        intensity = intensity - intensity[zero_idx]
+    if N < 2:
+        hc_map = np.full((b_H, b_W), np.nan, dtype=np.float32)
+        hc_map_full = np.repeat(np.repeat(hc_map, bin_size, axis=0), bin_size, axis=1)
+        if return_hr:
+            return hc_map_full[:H, :W], hc_map_full[:H, :W]
+        return hc_map_full[:H, :W]
 
-        # Calculate Hc
-        return r, c, extract_hc_from_loop(field, intensity)
+    i_min = np.argmin(field)
+    i_max = np.argmax(field)
 
-    # Execute in parallel
-    coords = [(r, c) for r in range(b_H) for c in range(b_W)]
+    if i_min < i_max:
+        asc_idx = np.arange(i_min, i_max + 1)
+        desc_idx = np.concatenate([np.arange(i_max, N), np.arange(0, i_min + 1)])
+    else:
+        desc_idx = np.arange(i_max, i_min + 1)
+        asc_idx = np.concatenate([np.arange(i_min, N), np.arange(0, i_max + 1)])
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        results = list(executor.map(lambda args: process_pixel(*args), coords))
+    f_asc = field[asc_idx]
+    sort_asc = np.argsort(f_asc)
+    f_asc = f_asc[sort_asc]
 
-    for r, c, hc in results:
-        hc_map[r, c] = hc
+    f_desc = field[desc_idx]
+    sort_desc = np.argsort(f_desc)
+    f_desc = f_desc[sort_desc]
 
-    # Upsample back to original size for display
-    hc_map_full = np.zeros((H, W), dtype=np.float32)
-    for r in range(b_H):
-        for c in range(b_W):
-            hc_map_full[r*bin_size:(r+1)*bin_size, c*bin_size:(c+1)*bin_size] = hc_map[r, c]
+    field_off = field - np.mean(field)
+    field_abs_max = np.max(np.abs(field_off))
 
-    return hc_map_full
+    if field_abs_max == 0:
+        hc_map = np.full((b_H, b_W), np.nan, dtype=np.float32)
+        hc_map_full = np.repeat(np.repeat(hc_map, bin_size, axis=0), bin_size, axis=1)
+        if return_hr:
+            return hc_map_full[:H, :W], hc_map_full[:H, :W]
+        return hc_map_full[:H, :W]
+
+    sat_mask_pos = field_off > (0.8 * field_abs_max)
+    sat_mask_neg = field_off < (-0.8 * field_abs_max)
+
+    if np.sum(sat_mask_pos) > 0:
+        sat_pos = np.mean(flat_stack[sat_mask_pos, :], axis=0)
+    else:
+        sat_pos = flat_stack[i_max, :]
+
+    if np.sum(sat_mask_neg) > 0:
+        sat_neg = np.mean(flat_stack[sat_mask_neg, :], axis=0)
+    else:
+        sat_neg = flat_stack[i_min, :]
+
+    mid = 0.5 * (sat_pos + sat_neg)
+
+    # ------------------------------------------------------------------
+    # Apply Vectorized Loop Corrections (drift, linear Faraday, quadratic Cotton-Mouton)
+    # ------------------------------------------------------------------
+    if apply_corrections:
+        idx = np.arange(N, dtype=np.float32)
+        idx_off = idx - idx.mean()
+        field_off = field - np.mean(field)
+        field_abs_max = np.max(np.abs(field_off))
+
+        # Pass 1 - endpoint drift alignment (vectorized per pixel)
+        drift1 = (flat_stack[0, :] - flat_stack[-1, :]) / N
+        flat_stack = flat_stack + drift1[np.newaxis, :] * idx_off[:, np.newaxis]
+
+        # Joint 4-Parameter Fit: y = c1*h + c2*h^2 + c3*sign(h) + c4
+        sat_threshold = 0.80 * field_abs_max
+        fit_mask = np.abs(field_off) > sat_threshold
+        if np.sum(fit_mask) < 4:
+            sat_threshold = 0.50 * field_abs_max
+            fit_mask = np.abs(field_off) > sat_threshold
+
+        if np.sum(fit_mask) >= 4:
+            h_fit = field_off[fit_mask]
+            y_fit = flat_stack[fit_mask, :]
+            
+            # Design matrix for least squares fit: shape (M_fit, 4)
+            A = np.column_stack([h_fit, h_fit**2, np.sign(h_fit), np.ones_like(h_fit)])
+            try:
+                # Solve for all pixels simultaneously: A @ coeffs = y_fit
+                coeffs_fit, _, _, _ = np.linalg.lstsq(A, y_fit, rcond=None)
+                c1, c2 = coeffs_fit[0], coeffs_fit[1]
+                linear_val = -c1
+                quad1 = -c2
+                
+                # Check for extreme quadratic corrections and clip them
+                # A typical Cotton-Mouton contribution shouldn't exceed reasonable bounds of signal range.
+                # Clip c2/quad1 to +/- 10.0 / (field_abs_max**2) to avoid runaway fits at noisy pixels.
+                quad_limit = 10.0 / (field_abs_max ** 2) if field_abs_max > 0 else 1.0
+                quad1 = np.clip(quad1, -quad_limit, quad_limit)
+            except Exception:
+                linear_val = np.zeros(P, dtype=np.float32)
+                quad1 = np.zeros(P, dtype=np.float32)
+        else:
+            linear_val = np.zeros(P, dtype=np.float32)
+            quad1 = np.zeros(P, dtype=np.float32)
+
+        # Pass 2 - apply shape correction & second drift correction
+        flat_stack = (flat_stack 
+                      + linear_val[np.newaxis, :] * field_off[:, np.newaxis] 
+                      + quad1[np.newaxis, :] * (field_off[:, np.newaxis] ** 2))
+
+        drift2 = (flat_stack[0, :] - flat_stack[-1, :]) / N
+        flat_stack = flat_stack + drift2[np.newaxis, :] * idx_off[:, np.newaxis]
+
+    # Re-evaluate saturation shelves after correction to calculate a clean midpoint level
+    if np.sum(sat_mask_pos) > 0:
+        sat_pos = np.mean(flat_stack[sat_mask_pos, :], axis=0)
+    else:
+        sat_pos = flat_stack[i_max, :]
+
+    if np.sum(sat_mask_neg) > 0:
+        sat_neg = np.mean(flat_stack[sat_mask_neg, :], axis=0)
+    else:
+        sat_neg = flat_stack[i_min, :]
+
+    mid = 0.5 * (sat_pos + sat_neg)
+
+    y_asc = flat_stack[asc_idx, :][sort_asc, :]
+    y_desc = flat_stack[desc_idx, :][sort_desc, :]
+
+    def find_crossings_vectorized(f_branch, y_branch, mid):
+        M, P_dim = y_branch.shape
+        if M < 2:
+            return np.full(P_dim, np.nan, dtype=np.float32)
+
+        diff = y_branch - mid
+        diff_0 = diff[:-1, :]
+        diff_1 = diff[1:, :]
+
+        y0 = y_branch[:-1, :]
+        y1 = y_branch[1:, :]
+
+        cross_mask = (diff_0 * diff_1 <= 0) & (y0 != y1)
+        dy = np.abs(y1 - y0)
+        dy_masked = np.where(cross_mask, dy, -1.0)
+
+        i_max_sel = np.argmax(dy_masked, axis=0)
+        max_dy = np.take_along_axis(dy_masked, i_max_sel[np.newaxis, :], axis=0)[0]
+
+        fallback_idx = np.argmin(np.abs(diff), axis=0)
+        hc_fallback = f_branch[fallback_idx]
+
+        f0 = f_branch[i_max_sel]
+        f1 = f_branch[np.minimum(i_max_sel + 1, M - 1)]
+
+        y0_sel = np.take_along_axis(y0, i_max_sel[np.newaxis, :], axis=0)[0]
+        y1_sel = np.take_along_axis(y1, i_max_sel[np.newaxis, :], axis=0)[0]
+
+        denom = y1_sel - y0_sel
+        frac = np.where(denom != 0, (mid - y0_sel) / denom, 0.0)
+        f_cross = f0 + frac * (f1 - f0)
+
+        return np.where(max_dy >= 0, f_cross, hc_fallback)
+
+    hc_pos = find_crossings_vectorized(f_asc, y_asc, mid)
+    hc_neg = find_crossings_vectorized(f_desc, y_desc, mid)
+
+    nan_pos = np.isnan(hc_pos)
+    nan_neg = np.isnan(hc_neg)
+
+    hc_combined = np.where(
+        ~nan_pos & ~nan_neg,
+        (np.abs(hc_pos) + np.abs(hc_neg)) / 2.0,
+        np.where(
+            ~nan_pos,
+            np.abs(hc_pos),
+            np.where(
+                ~nan_neg,
+                np.abs(hc_neg),
+                np.nan
+            )
+        )
+    )
+
+    hc_map = hc_combined.reshape(b_H, b_W)
+    hc_map_full = np.repeat(np.repeat(hc_map, bin_size, axis=0), bin_size, axis=1)
+
+    if return_hr:
+        iz_asc = np.argmin(np.abs(f_asc))
+        iz_desc = np.argmin(np.abs(f_desc))
+        hr_asc = y_asc[iz_asc, :]
+        hr_desc = y_desc[iz_desc, :]
+        hr_abs = 0.5 * (np.abs(hr_asc) + np.abs(hr_desc))
+        
+        hr_map = hr_abs.reshape(b_H, b_W)
+        hr_map_full = np.repeat(np.repeat(hr_map, bin_size, axis=0), bin_size, axis=1)
+        return hc_map_full[:H, :W], hr_map_full[:H, :W]
+
+    return hc_map_full[:H, :W]
 
 
 def compute_subtracted_mean(img_arr, bg_base, enable_z=False, coeff=0.0, method_idx=0, field=0.0, enable_roi=False, roi_shape="None", roi_data=None, crop_func=crop600):

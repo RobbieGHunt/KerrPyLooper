@@ -36,8 +36,8 @@ class HcCalcThread(QThread):
 
     def run(self):
         try:
-            hc_map = calculate_local_hc(self.img_stack, self.loop_field, self.bin_size)
-            self.finished.emit(hc_map)
+            hc_map, hr_map = calculate_local_hc(self.img_stack, self.loop_field, self.bin_size, return_hr=True)
+            self.finished.emit((hc_map, hr_map))
         except Exception as e:
             self.error.emit(str(e))
 
@@ -46,7 +46,7 @@ class HcMapGUI(QWidget):
         super().__init__(parent)
         self.theme = theme
         self.setObjectName("MainBg")
-        self.setWindowTitle("Local Coercivity (Hc) Mapping")
+        self.setWindowTitle("Local Mapping (Hc & Hr)")
 
         self.img_dir = None
         self.txt_data = None
@@ -54,6 +54,8 @@ class HcMapGUI(QWidget):
         self.background_array = None
 
         self.hc_map = None
+        self.hr_map = None
+        self.img_stack = None
         self.figure = None
         self.ax = None
         self.canvas = None
@@ -91,7 +93,7 @@ class HcMapGUI(QWidget):
         group_params.setLayout(form_params)
         left_layout.addWidget(group_params)
 
-        self.btn_calc = QPushButton("Calculate Hc Map")
+        self.btn_calc = QPushButton("Calculate Maps")
         self.btn_calc.clicked.connect(self.calculate_map)
         self.btn_calc.setEnabled(False)
         left_layout.addWidget(self.btn_calc)
@@ -102,8 +104,14 @@ class HcMapGUI(QWidget):
 
         group_plot = QGroupBox("Plot Settings")
         form_plot = QFormLayout()
+
+        self.cmb_map_type = QComboBox()
+        self.cmb_map_type.addItems(["Coercivity (Hc)", "Remanence (Hr)"])
+        self.cmb_map_type.currentTextChanged.connect(self.replot_map)
+        form_plot.addRow("Map Type:", self.cmb_map_type)
+
         self.cmb_cmap = QComboBox()
-        self.cmb_cmap.addItems(["plasma", "viridis", "inferno", "magma", "cividis", "jet"])
+        self.cmb_cmap.addItems(["seismic", "plasma", "viridis", "inferno", "magma", "cividis", "jet"])
         self.cmb_cmap.currentTextChanged.connect(self.replot_map)
         form_plot.addRow("Colormap:", self.cmb_cmap)
 
@@ -116,6 +124,10 @@ class HcMapGUI(QWidget):
         self.sld_alpha.setValue(70)
         self.sld_alpha.valueChanged.connect(self.replot_map)
         form_plot.addRow("Overlay Alpha:", self.sld_alpha)
+
+        self.chk_hover = QCheckBox("Hover Over Loop")
+        self.chk_hover.stateChanged.connect(self.on_hover_changed)
+        form_plot.addRow(self.chk_hover)
 
         group_plot.setLayout(form_plot)
         left_layout.addWidget(group_plot)
@@ -142,6 +154,10 @@ class HcMapGUI(QWidget):
         self.canvas = FigureCanvas(self.figure)
         self.toolbar = NavigationToolbar(self.canvas, self)
 
+        # Hover-over overlay/widget properties
+        self.hover_cid = None
+        self.hover_annotation = None
+
         right_layout.addWidget(self.toolbar)
         right_layout.addWidget(self.canvas)
 
@@ -150,6 +166,115 @@ class HcMapGUI(QWidget):
         self.setLayout(main_layout)
 
         apply_theme(self, self.theme)
+
+    def on_hover_changed(self, state):
+        if state == Qt.Checked:
+            if self.hover_cid is None:
+                self.hover_cid = self.canvas.mpl_connect("motion_notify_event", self.on_mouse_move)
+        else:
+            if self.hover_cid is not None:
+                self.canvas.mpl_disconnect(self.hover_cid)
+                self.hover_cid = None
+            if self.hover_annotation is not None:
+                try:
+                    self.hover_annotation.remove()
+                except Exception:
+                    pass
+                self.hover_annotation = None
+                self.canvas.draw_idle()
+
+    def on_mouse_move(self, event):
+        if event.inaxes != self.ax or self.img_stack is None:
+            if self.hover_annotation is not None:
+                self.hover_annotation.set_visible(False)
+                self.canvas.draw_idle()
+            return
+
+        x, y = event.xdata, event.ydata
+        if x is None or y is None:
+            return
+
+        h, w = self.background_array.shape[:2] if self.background_array is not None else self.img_stack.shape[1:3]
+        col = int(np.clip(x, 0, w - 1))
+        row = int(np.clip(y, 0, h - 1))
+
+        # Extract local loop intensity at this pixel and subtract zero-field background
+        intensity = self.img_stack[:, row, col].copy()
+        zero_idx = np.argmin(np.abs(self.loop_field))
+        intensity = intensity - intensity[zero_idx]
+
+        # Apply loop corrections (drift, linear Faraday, quadratic Cotton-Mouton)
+        N_pts = len(intensity)
+        idx = np.arange(N_pts, dtype=np.float32)
+        idx_off = idx - idx.mean()
+        field_off = self.loop_field - np.mean(self.loop_field)
+        field_abs_max = np.max(np.abs(field_off))
+
+        # Pass 1 - endpoint drift alignment
+        drift1 = (intensity[0] - intensity[-1]) / N_pts
+        intensity = intensity + drift1 * idx_off
+
+        # Saturation fit
+        sat_threshold = 0.80 * field_abs_max
+        fit_mask = np.abs(field_off) > sat_threshold
+        if np.sum(fit_mask) < 4:
+            sat_threshold = 0.50 * field_abs_max
+            fit_mask = np.abs(field_off) > sat_threshold
+
+        linear_val = 0.0
+        quad1 = 0.0
+        if np.sum(fit_mask) >= 4:
+            h_fit = field_off[fit_mask]
+            y_fit = intensity[fit_mask]
+            A = np.column_stack([h_fit, h_fit**2, np.sign(h_fit), np.ones_like(h_fit)])
+            try:
+                coeffs_fit, _, _, _ = np.linalg.lstsq(A, y_fit, rcond=None)
+                linear_val = -coeffs_fit[0]
+                quad1 = -coeffs_fit[1]
+            except Exception:
+                pass
+
+        # Apply shape correction & second drift correction
+        intensity = intensity + linear_val * field_off + quad1 * (field_off ** 2)
+        drift2 = (intensity[0] - intensity[-1]) / N_pts
+        intensity = intensity + drift2 * idx_off
+
+        # Normalize loop to [-1, 1]
+        ptp = np.ptp(intensity)
+        if ptp > 0:
+            intensity = (intensity - np.min(intensity)) / ptp * 2 - 1
+        else:
+            intensity[:] = 0.0
+
+        # Draw / Update Hover Annotation
+        if self.hover_annotation is not None:
+            try:
+                self.hover_annotation.remove()
+            except Exception:
+                pass
+
+        # We'll embed an inset axes or offset box inside the plot
+        # For simplicity and robust display, let's create a custom annotation with a mini plot inside it or draw directly using an inset axes.
+        # Since creating inset axes dynamically on mouse motion can be slow, we can draw a small pop-up box with a custom plot inside it using matplotlib's BboxConnector/AnnotationBbox or an InsetAxes that we update.
+        if not hasattr(self, 'inset_ax') or self.inset_ax is None:
+            # Create inset axes once
+            from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+            self.inset_ax = inset_axes(self.ax, width="30%", height="30%", loc="upper right")
+            self.inset_ax.tick_params(labelsize=8, colors='white')
+            # Hide borders or style appropriately
+            for spine in self.inset_ax.spines.values():
+                spine.set_color('cyan')
+        
+        self.inset_ax.clear()
+        self.inset_ax.set_facecolor('#1a1a1a')
+        
+        # Plot Loop
+        self.inset_ax.plot(self.loop_field, intensity, color='#00ffcc', marker='.', markersize=2, linewidth=1)
+        self.inset_ax.set_title(f"Loop at ({col},{row})", fontsize=8, color='white')
+        self.inset_ax.xaxis.set_tick_params(labelbottom=False)
+        self.inset_ax.yaxis.set_tick_params(labelleft=False)
+        self.inset_ax.set_visible(True)
+        self.canvas.draw_idle()
 
     def choose_directory(self):
         d = QFileDialog.getExistingDirectory(self, "Select Image Directory")
@@ -213,18 +338,18 @@ class HcMapGUI(QWidget):
             else:
                 img_stack.append(img.astype(np.float32))
 
-        img_stack = np.array(img_stack) # shape: (N, H, W)
+        self.img_stack = np.array(img_stack) # shape: (N, H, W)
 
         bin_size = self.spin_bin_size.value()
 
         # Run calculation in a background thread
-        self.calc_thread = HcCalcThread(img_stack, self.loop_field, bin_size)
+        self.calc_thread = HcCalcThread(self.img_stack, self.loop_field, bin_size)
         self.calc_thread.finished.connect(self.on_calc_finished)
         self.calc_thread.error.connect(self.on_calc_error)
         self.calc_thread.start()
 
-    def on_calc_finished(self, hc_map):
-        self.hc_map = hc_map
+    def on_calc_finished(self, result):
+        self.hc_map, self.hr_map = result
         self.replot_map()
         self.btn_save.setEnabled(True)
         self._reset_calc_ui()
@@ -239,7 +364,11 @@ class HcMapGUI(QWidget):
         self.progress_bar.setVisible(False)
 
     def replot_map(self):
-        if self.hc_map is None:
+        map_type = self.cmb_map_type.currentText()
+        is_hr = "Remanence" in map_type
+        current_map = self.hr_map if is_hr else self.hc_map
+
+        if current_map is None:
             return
 
         self.ax.clear()
@@ -264,27 +393,36 @@ class HcMapGUI(QWidget):
             self.ax.imshow(self.background_array, cmap='gray')
             alpha = self.sld_alpha.value() / 100.0
 
-            # Create masked array where Hc is NaN or zero to avoid plotting over background completely
-            masked_hc = np.ma.masked_where(np.isnan(self.hc_map) | (self.hc_map == 0), self.hc_map)
+            # Create masked array where values are NaN or zero to avoid plotting over background completely
+            masked_map = np.ma.masked_where(np.isnan(current_map) | (current_map == 0), current_map)
 
-            # Ensure Hc map has same spatial extent as background image
+            # Ensure map has same spatial extent as background image
             h, w = self.background_array.shape[:2]
-            im = self.ax.imshow(masked_hc, cmap=cmap_name, alpha=alpha, extent=[0, w, h, 0])
+            im = self.ax.imshow(masked_map, cmap=cmap_name, alpha=alpha, extent=[0, w, h, 0])
         else:
-            masked_hc = np.ma.masked_where(np.isnan(self.hc_map) | (self.hc_map == 0), self.hc_map)
-            im = self.ax.imshow(masked_hc, cmap=cmap_name)
+            masked_map = np.ma.masked_where(np.isnan(current_map) | (current_map == 0), current_map)
+            im = self.ax.imshow(masked_map, cmap=cmap_name)
 
-        # Only add colorbar if it doesn't exist to prevent duplicates
+        label_text = 'Local Remanence Hr (a.u.)' if is_hr else 'Local Coercivity Hc (mT)'
+        title_text = 'Spatially Resolved Local Remanence Map' if is_hr else 'Spatially Resolved Local Coercivity Map'
+
+        # Instead of calling self.cbar.remove() which modifies the axes grid layout and squashes the parent plot,
+        # we check if colorbar exists and update its scalar mappable.
+        # If the label has changed or colorbar is not initialized, we draw it.
         if not hasattr(self, 'cbar') or self.cbar is None:
             self.cbar = self.figure.colorbar(im, ax=self.ax)
-            self.cbar.set_label('Local Coercivity Hc (mT)', color=text_color)
+            self.cbar.set_label(label_text, color=text_color)
         else:
             self.cbar.update_normal(im)
+            self.cbar.set_label(label_text, color=text_color)
 
-        self.cbar.ax.yaxis.set_tick_params(color=text_color)
-        self.cbar.ax.yaxis.set_ticklabels(self.cbar.ax.yaxis.get_ticklabels(), color=text_color)
+        try:
+            self.cbar.ax.yaxis.set_tick_params(color=text_color)
+            self.cbar.ax.yaxis.set_ticklabels(self.cbar.ax.yaxis.get_ticklabels(), color=text_color)
+        except Exception:
+            pass
 
-        self.ax.set_title("Spatially Resolved Local Coercivity Map")
+        self.ax.set_title(title_text)
         self.ax.set_xlabel("X (pixels)")
         self.ax.set_ylabel("Y (pixels)")
 
@@ -292,15 +430,20 @@ class HcMapGUI(QWidget):
         self.canvas.draw()
 
     def save_map(self):
-        if self.hc_map is None:
+        map_type = self.cmb_map_type.currentText()
+        is_hr = "Remanence" in map_type
+        current_map = self.hr_map if is_hr else self.hc_map
+
+        if current_map is None:
             return
 
+        name_prefix = "Hr" if is_hr else "Hc"
         save_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Hc Map Image", "", "PNG Files (*.png)"
+            self, f"Save {name_prefix} Map Image", "", "PNG Files (*.png)"
         )
         if save_path:
             self.figure.savefig(save_path, dpi=300)
-            QMessageBox.information(self, "Saved", f"Hc map saved to:\n{save_path}")
+            QMessageBox.information(self, "Saved", f"{name_prefix} map saved to:\n{save_path}")
 
 if __name__ == "__main__":
     import argparse

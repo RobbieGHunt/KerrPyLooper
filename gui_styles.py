@@ -435,3 +435,87 @@ def apply_theme(widget_or_app, theme_name="dark"):
     palette = get_theme_colors(theme_name)
     qss = BASE_QSS_TEMPLATE.format(**palette)
     widget_or_app.setStyleSheet(qss)
+
+def get_magnetic_icon(theme_name="dark"):
+    """
+    Returns a QIcon representing a magnetic MOKE measurement (electromagnet and loop).
+    Paints dynamically to match the current theme palette.
+    """
+    from PyQt5.QtGui import QIcon, QPixmap, QPainter, QPen, QBrush, QColor, QPainterPath
+    from PyQt5.QtCore import Qt, QRectF
+    import math
+    
+    # Create a 256x256 high-res pixmap
+    pixmap = QPixmap(256, 256)
+    pixmap.fill(Qt.transparent)
+    
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    
+    palette = get_theme_colors(theme_name)
+    accent = QColor(palette["accent"])
+    bg = QColor(palette["bg"])
+    border = QColor(palette["border"])
+    
+    # 1. Outer circular base/shield
+    painter.setBrush(QBrush(bg))
+    painter.setPen(QPen(border, 6))
+    painter.drawEllipse(12, 12, 232, 232)
+    
+    # 2. Draw magnetic field lines (dashed loops in background)
+    pen_lines = QPen(QColor(accent.red(), accent.green(), accent.blue(), 100), 3, Qt.DashLine)
+    painter.setPen(pen_lines)
+    painter.setBrush(Qt.NoBrush)
+    painter.drawEllipse(48, 80, 160, 96)
+    
+    # 3. Draw U-shaped electromagnet pole pieces
+    painter.setBrush(QBrush(QColor("#4b5563")))
+    painter.setPen(QPen(QColor("#374151"), 4))
+    painter.drawRect(30, 80, 40, 100)
+    painter.drawRect(186, 80, 40, 100)
+    painter.drawRect(30, 170, 196, 30)
+    
+    # Orange coils on the yoke
+    painter.setBrush(QBrush(QColor("#f97316")))
+    painter.setPen(QPen(QColor("#c2410c"), 2))
+    for x in range(50, 190, 24):
+        painter.drawRect(x, 165, 18, 40)
+        
+    # 4. Hysteresis loop in center
+    path = QPainterPath()
+    cx, cy = 128.0, 110.0
+    dw, dh = 80.0, 60.0
+    k = 4.5
+    hc = 0.25
+    steps = 40
+    
+    # Lower curve
+    path.moveTo(float(cx - dw / 2.0), float(cy - math.tanh(k * (-1.0 - hc)) * (dh / 2.0)))
+    for i in range(steps + 1):
+        t = -1.0 + 2.0 * i / steps
+        y = math.tanh(k * (t - hc))
+        px = cx + t * (dw / 2.0)
+        py = cy - y * (dh / 2.0)
+        path.lineTo(float(px), float(py))
+        
+    # Upper curve
+    for i in range(steps + 1):
+        t = 1.0 - 2.0 * i / steps
+        y = math.tanh(k * (t + hc))
+        px = cx + t * (dw / 2.0)
+        py = cy - y * (dh / 2.0)
+        path.lineTo(float(px), float(py))
+    path.closeSubpath()
+    
+    pen_loop = QPen(accent, 8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    painter.setPen(pen_loop)
+    painter.setBrush(QBrush(QColor(accent.red(), accent.green(), accent.blue(), 30)))
+    painter.drawPath(path)
+    
+    # 5. Core dot in center
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QBrush(QColor(255, 255, 255, 200)))
+    painter.drawEllipse(int(cx - 5), int(cy - 5), 10, 10)
+    
+    painter.end()
+    return QIcon(pixmap)

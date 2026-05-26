@@ -24,10 +24,10 @@ from PyQt5.QtWidgets import (
     QPushButton, QLabel, QFrame, QSplitter, QTextEdit, QMessageBox,
     QFileDialog, QProgressBar, QGraphicsDropShadowEffect, QComboBox
 )
-from PyQt5.QtGui import QFont, QColor, QTextCursor, QPainter, QPainterPath, QPen, QBrush, QConicalGradient, QRadialGradient
+from PyQt5.QtGui import QFont, QColor, QTextCursor, QPainter, QPainterPath, QPen, QBrush, QConicalGradient, QRadialGradient, QIcon
 from PyQt5.QtCore import Qt, QProcess, QProcessEnvironment, QRectF, QPointF
 
-from gui_styles import apply_theme
+from gui_styles import apply_theme, get_magnetic_icon
 
 # ==============================================================================
 # TOOL REGISTRY (Easily add new scripts here)
@@ -280,7 +280,6 @@ class DriftAlignmentWidget(QWidget):
         colors = get_theme_colors(self.theme)
         accent_color = QColor(colors["accent"])
         border_color = QColor(colors["border"])
-        text_muted = QColor(colors["text_muted"])
         
         w, h = self.width(), self.height()
         margin = 10
@@ -292,79 +291,46 @@ class DriftAlignmentWidget(QWidget):
         painter.setPen(QPen(border_color, 1.5, Qt.SolidLine))
         painter.drawEllipse(int(cx - r_max), int(cy - r_max), int(2 * r_max), int(2 * r_max))
         
-        # 2. Draw fine grid dots representing sensor pixels
-        grid_pen = QPen(QColor(border_color.red(), border_color.green(), border_color.blue(), 80), 1)
-        painter.setPen(grid_pen)
-        grid_step = 8
-        for x in range(int(cx - r_max * 0.7), int(cx + r_max * 0.7), grid_step):
-            for y in range(int(cy - r_max * 0.7), int(cy + r_max * 0.7), grid_step):
-                # Only draw within the circle bounds
-                dx = x - cx
-                dy = y - cy
-                if dx*dx + dy*dy < (r_max * 0.75) * (r_max * 0.75):
-                    painter.drawPoint(x, y)
-                    
-        # 3. Reference frame (centered, stable, solid accent color with soft translucent fill)
-        frame_w = r_max * 1.15
-        frame_h = r_max * 0.85
+        # 2. Reference frame (centered, stable, solid accent color with soft translucent fill)
+        frame_w = r_max * 1.1
+        frame_h = r_max * 0.8
         ref_rect = QRectF(cx - frame_w/2, cy - frame_h/2, frame_w, frame_h)
-        painter.setBrush(QBrush(QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 20)))
-        painter.setPen(QPen(accent_color, 1.8, Qt.SolidLine))
+        painter.setBrush(QBrush(QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 15)))
+        painter.setPen(QPen(accent_color, 2.0, Qt.SolidLine))
         painter.drawRoundedRect(ref_rect, 4.0, 4.0)
         
-        # 4. Drifted frame (shifted, dotted, pinkish color)
-        shift_x = 8
-        shift_y = -6
+        # 3. Drifted frame (shifted, dotted, pinkish color representing uncorrected image)
+        shift_x = 10
+        shift_y = -8
         drift_rect = QRectF(cx - frame_w/2 + shift_x, cy - frame_h/2 + shift_y, frame_w, frame_h)
         painter.setBrush(Qt.NoBrush)
         drift_pen = QPen(QColor("#f472b6"), 1.2, Qt.DashLine)
         painter.setPen(drift_pen)
         painter.drawRoundedRect(drift_rect, 4.0, 4.0)
         
-        # 5. Anchor symbol in the center of the reference frame
-        pen_anchor = QPen(accent_color, 1.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-        painter.setPen(pen_anchor)
-        painter.setBrush(Qt.NoBrush)
-        
-        # Ring at the top
-        ring_r = 3.5
-        ring_y = cy - frame_h * 0.2
-        painter.drawEllipse(QRectF(cx - ring_r, ring_y - ring_r, 2 * ring_r, 2 * ring_r))
-        
-        # Vertical shank
-        shank_top = ring_y + ring_r
-        shank_bottom = cy + frame_h * 0.22
-        painter.drawLine(QPointF(cx, shank_top), QPointF(cx, shank_bottom))
-        
-        # Crossbar (stock)
-        stock_y = ring_y + ring_r + 3.0
-        stock_w = 10.0
-        painter.drawLine(QPointF(cx - stock_w/2, stock_y), QPointF(cx + stock_w/2, stock_y))
-        
-        # Curved fluke at the bottom
-        fluke_r = 8.5
-        fluke_rect = QRectF(cx - fluke_r, shank_bottom - fluke_r, 2 * fluke_r, 2 * fluke_r)
-        painter.drawArc(fluke_rect, 180 * 16, 180 * 16)
-        
-        # Fluke tips (arrows pointing upward slightly)
-        painter.drawLine(QPointF(cx - fluke_r, shank_bottom), QPointF(cx - fluke_r + 1.5, shank_bottom - 2.5))
-        painter.drawLine(QPointF(cx + fluke_r, shank_bottom), QPointF(cx + fluke_r - 1.5, shank_bottom - 2.5))
-        
-        # 6. Correction vector arrow (from center of drifted frame to center of ref frame)
+        # 4. Correction vector arrow (from center of drifted frame to center of ref frame)
         dcx = cx + shift_x
         dcy = cy + shift_y
         
-        pen_vector = QPen(QColor("#f472b6"), 1.4, Qt.SolidLine)
-        painter.setPen(pen_vector)
+        # Draw dotted path representing drift trajectory
+        pen_path = QPen(QColor(255, 255, 255, 100), 1.0, Qt.DotLine)
+        painter.setPen(pen_path)
         painter.drawLine(QPointF(dcx, dcy), QPointF(cx, cy))
         
-        # Arrowhead pointing to reference center (cx, cy)
+        # Draw vector arrow head pointing to reference center (cx, cy)
+        pen_vector = QPen(QColor("#f472b6"), 1.8, Qt.SolidLine)
+        painter.setPen(pen_vector)
+        
         vx = -shift_x
         vy = -shift_y
         length = math.sqrt(vx*vx + vy*vy)
         if length > 0.1:
             ux, uy = vx / length, vy / length
-            al = 5.0
+            # Draw line segment
+            painter.drawLine(QPointF(dcx, dcy), QPointF(cx, cy))
+            
+            # Arrowhead details
+            al = 6.0
             angle = math.radians(25)
             # Right wing
             rx = ux * math.cos(angle) - uy * math.sin(angle)
@@ -375,23 +341,169 @@ class DriftAlignmentWidget(QWidget):
             ly = ux * math.sin(-angle) + uy * math.cos(-angle)
             painter.drawLine(QPointF(cx, cy), QPointF(cx - al * lx, cy - al * ly))
             
-        # 7. Corner brackets (Autofocus style) around the reference frame corners
+        # 5. Corner brackets (Autofocus style) around the reference frame corners to indicate alignment active
         pen_brackets = QPen(accent_color, 1.5, Qt.SolidLine)
         painter.setPen(pen_brackets)
-        bs = 5.0 # bracket size
+        bs = 6.0 # bracket size
+        offset = 3.0
         
-        # Top-Left Bracket
-        painter.drawLine(QPointF(cx - frame_w/2 - 2, cy - frame_h/2 - 2), QPointF(cx - frame_w/2 - 2 + bs, cy - frame_h/2 - 2))
-        painter.drawLine(QPointF(cx - frame_w/2 - 2, cy - frame_h/2 - 2), QPointF(cx - frame_w/2 - 2, cy - frame_h/2 - 2 + bs))
-        # Top-Right Bracket
-        painter.drawLine(QPointF(cx + frame_w/2 + 2, cy - frame_h/2 - 2), QPointF(cx + frame_w/2 + 2 - bs, cy - frame_h/2 - 2))
-        painter.drawLine(QPointF(cx + frame_w/2 + 2, cy - frame_h/2 - 2), QPointF(cx + frame_w/2 + 2, cy - frame_h/2 - 2 + bs))
-        # Bottom-Left Bracket
-        painter.drawLine(QPointF(cx - frame_w/2 - 2, cy + frame_h/2 + 2), QPointF(cx - frame_w/2 - 2 + bs, cy + frame_h/2 + 2))
-        painter.drawLine(QPointF(cx - frame_w/2 - 2, cy + frame_h/2 + 2), QPointF(cx - frame_w/2 - 2, cy + frame_h/2 + 2 - bs))
-        # Bottom-Right Bracket
-        painter.drawLine(QPointF(cx + frame_w/2 + 2, cy + frame_h/2 + 2), QPointF(cx + frame_w/2 + 2 - bs, cy + frame_h/2 + 2))
-        painter.drawLine(QPointF(cx + frame_w/2 + 2, cy + frame_h/2 + 2), QPointF(cx + frame_w/2 + 2, cy + frame_h/2 + 2 - bs))
+        # Top-Left
+        painter.drawLine(QPointF(cx - frame_w/2 - offset, cy - frame_h/2 - offset), QPointF(cx - frame_w/2 - offset + bs, cy - frame_h/2 - offset))
+        painter.drawLine(QPointF(cx - frame_w/2 - offset, cy - frame_h/2 - offset), QPointF(cx - frame_w/2 - offset, cy - frame_h/2 - offset + bs))
+        # Top-Right
+        painter.drawLine(QPointF(cx + frame_w/2 + offset, cy - frame_h/2 - offset), QPointF(cx + frame_w/2 + offset - bs, cy - frame_h/2 - offset))
+        painter.drawLine(QPointF(cx + frame_w/2 + offset, cy - frame_h/2 - offset), QPointF(cx + frame_w/2 + offset, cy - frame_h/2 - offset + bs))
+        # Bottom-Left
+        painter.drawLine(QPointF(cx - frame_w/2 - offset, cy + frame_h/2 + offset), QPointF(cx - frame_w/2 - offset + bs, cy + frame_h/2 + offset))
+        painter.drawLine(QPointF(cx - frame_w/2 - offset, cy + frame_h/2 + offset), QPointF(cx - frame_w/2 - offset, cy + frame_h/2 + offset - bs))
+        # Bottom-Right
+        painter.drawLine(QPointF(cx + frame_w/2 + offset, cy + frame_h/2 + offset), QPointF(cx + frame_w/2 + offset - bs, cy + frame_h/2 + offset))
+        painter.drawLine(QPointF(cx + frame_w/2 + offset, cy + frame_h/2 + offset), QPointF(cx + frame_w/2 + offset, cy + frame_h/2 + offset - bs))
+        
+        painter.end()
+
+
+# ==============================================================================
+# CUSTOM BATCH LOOP STACK WIDGET (ICON)
+# ==============================================================================
+class BatchLoopStackWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(80, 80)
+        self.setMaximumSize(120, 120)
+        self.theme = "charcoal"
+        
+    def set_theme(self, theme):
+        self.theme = theme
+        self.update()
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        from gui_styles import get_theme_colors
+        colors = get_theme_colors(self.theme)
+        
+        w, h = self.width(), self.height()
+        margin = 10
+        cx, cy = w / 2.0, h / 2.0
+        dw, dh = w - 2 * margin, h - 2 * margin
+        
+        grid_color = QColor(colors["border"])
+        pen_grid = QPen(QColor(grid_color.red(), grid_color.green(), grid_color.blue(), 100), 1, Qt.DashLine)
+        painter.setPen(pen_grid)
+        painter.drawLine(margin, int(cy), w - margin, int(cy))
+        painter.drawLine(int(cx), margin, int(cx), h - margin)
+        
+        loop_colors = [
+            QColor("#3b82f6"),
+            QColor(colors["accent"]),
+            QColor("#ec4899")
+        ]
+        
+        steps = 40
+        k = 4.5
+        
+        for idx, (hc, amp, color) in enumerate([
+            (0.35, 0.7, loop_colors[0]),
+            (0.20, 0.9, loop_colors[1]),
+            (0.10, 0.8, loop_colors[2])
+        ]):
+            alpha = 100 + idx * 70
+            line_color = QColor(color.red(), color.green(), color.blue(), alpha)
+            
+            path = QPainterPath()
+            w_scale = 0.8 + idx * 0.1
+            h_scale = 0.8 + idx * 0.1
+            cur_dw = dw * w_scale
+            cur_dh = dh * h_scale
+            
+            path.moveTo(float(cx - cur_dw / 2.0), float(cy - math.tanh(k * (-1.0 - hc)) * (cur_dh / 2.0)))
+            for i in range(steps + 1):
+                t = -1.0 + 2.0 * i / steps
+                y = math.tanh(k * (t - hc))
+                px = cx + t * (cur_dw / 2.0)
+                py = cy - y * (cur_dh / 2.0)
+                path.lineTo(float(px), float(py))
+                
+            for i in range(steps + 1):
+                t = 1.0 - 2.0 * i / steps
+                y = math.tanh(k * (t + hc))
+                px = cx + t * (cur_dw / 2.0)
+                py = cy - y * (cur_dh / 2.0)
+                path.lineTo(float(px), float(py))
+                
+            path.closeSubpath()
+            
+            pen_line = QPen(line_color, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            painter.setPen(pen_line)
+            painter.drawPath(path)
+            
+        painter.end()
+
+
+# ==============================================================================
+# CUSTOM LOCAL HC MAP PREVIEW WIDGET (ICON)
+# ==============================================================================
+class HcMapPreviewWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(80, 80)
+        self.setMaximumSize(120, 120)
+        self.theme = "charcoal"
+        
+    def set_theme(self, theme):
+        self.theme = theme
+        self.update()
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        from gui_styles import get_theme_colors
+        colors = get_theme_colors(self.theme)
+        
+        w, h = self.width(), self.height()
+        margin = 10
+        cx, cy = w / 2.0, h / 2.0
+        r_max = min(w, h) / 2.0 - margin
+        
+        border_color = QColor(colors["border"])
+        painter.setPen(QPen(border_color, 1.5, Qt.SolidLine))
+        painter.setBrush(QBrush(QColor(colors["bg"])))
+        map_rect = QRectF(cx - r_max, cy - r_max, 2 * r_max, 2 * r_max)
+        painter.drawRoundedRect(map_rect, 6.0, 6.0)
+        
+        grid_n = 6
+        tile_w = (2 * r_max) / grid_n
+        
+        def get_plasma_color(val):
+            r = int(255 * (val ** 0.8))
+            g = int(200 * (val ** 2.0))
+            b = int(255 * (1.0 - val ** 0.5) * 0.6 + 50)
+            return QColor(r, g, b, 220)
+            
+        for r in range(grid_n):
+            for c in range(grid_n):
+                dist = math.sqrt((r - 2.5)**2 + (c - 2.5)**2)
+                norm_dist = min(dist / 3.54, 1.0)
+                val = 0.2 + 0.8 * (1.0 - norm_dist)
+                
+                # Pseudo-random jitter
+                val = max(0.0, min(1.0, val - 0.15 + ((r * 13 + c * 37) % 10) / 30.0))
+                
+                tile_color = get_plasma_color(val)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(tile_color))
+                
+                tx = cx - r_max + c * tile_w
+                ty = cy - r_max + r * tile_w
+                painter.drawRect(QRectF(tx + 0.5, ty + 0.5, tile_w - 1.0, tile_w - 1.0))
+                
+        pen_contour = QPen(QColor(255, 255, 255, 180), 1.5, Qt.SolidLine)
+        painter.setPen(pen_contour)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(QRectF(cx - r_max * 0.6, cy - r_max * 0.6, r_max * 1.2, r_max * 1.2))
         
         painter.end()
 
@@ -407,6 +519,8 @@ class ToolCardWidget(QFrame):
         self.loop_widget = None
         self.vortex_widget = None
         self.drift_widget = None
+        self.batch_widget = None
+        self.hc_map_widget = None
         
         # Setup vertical layout
         layout = QVBoxLayout(self)
@@ -421,6 +535,13 @@ class ToolCardWidget(QFrame):
             icon_layout.addWidget(self.loop_widget)
             icon_layout.addStretch()
             layout.addLayout(icon_layout)
+        elif tool_config["id"] == "batch_processor":
+            self.batch_widget = BatchLoopStackWidget(self)
+            icon_layout = QHBoxLayout()
+            icon_layout.addStretch()
+            icon_layout.addWidget(self.batch_widget)
+            icon_layout.addStretch()
+            layout.addLayout(icon_layout)
         elif tool_config["id"] == "vector_analysis":
             self.vortex_widget = VortexWidget(self)
             icon_layout = QHBoxLayout()
@@ -433,6 +554,13 @@ class ToolCardWidget(QFrame):
             icon_layout = QHBoxLayout()
             icon_layout.addStretch()
             icon_layout.addWidget(self.drift_widget)
+            icon_layout.addStretch()
+            layout.addLayout(icon_layout)
+        elif tool_config["id"] == "hc_map":
+            self.hc_map_widget = HcMapPreviewWidget(self)
+            icon_layout = QHBoxLayout()
+            icon_layout.addStretch()
+            icon_layout.addWidget(self.hc_map_widget)
             icon_layout.addStretch()
             layout.addLayout(icon_layout)
         else:
@@ -485,6 +613,10 @@ class ToolCardWidget(QFrame):
             self.vortex_widget.set_theme(theme)
         if self.drift_widget:
             self.drift_widget.set_theme(theme)
+        if self.batch_widget:
+            self.batch_widget.set_theme(theme)
+        if self.hc_map_widget:
+            self.hc_map_widget.set_theme(theme)
 
 
 # ==============================================================================
@@ -624,23 +756,30 @@ class SuiteLauncherWindow(QMainWindow):
         
         # Apply initial theme stylesheet
         apply_theme(self, self.current_theme)
+        self.setWindowIcon(get_magnetic_icon(self.current_theme))
         
     def on_theme_changed(self, index):
         theme_name = self.theme_selector.itemData(index)
         self.current_theme = theme_name
         apply_theme(self, self.current_theme)
+        self.setWindowIcon(get_magnetic_icon(self.current_theme))
         for card in self.cards:
             card.set_theme(self.current_theme)
         if self.active_looper_window is not None:
             self.active_looper_window.change_theme(self.current_theme)
+            self.active_looper_window.setWindowIcon(get_magnetic_icon(self.current_theme))
         if self.active_batch_window is not None:
             self.active_batch_window.change_theme(self.current_theme)
+            self.active_batch_window.setWindowIcon(get_magnetic_icon(self.current_theme))
         if self.active_vector_window is not None:
             self.active_vector_window.change_theme(self.current_theme)
+            self.active_vector_window.setWindowIcon(get_magnetic_icon(self.current_theme))
         if self.active_drift_window is not None:
             self.active_drift_window.change_theme(self.current_theme)
+            self.active_drift_window.setWindowIcon(get_magnetic_icon(self.current_theme))
         if self.active_hc_map_window is not None:
             self.active_hc_map_window.change_theme(self.current_theme)
+            self.active_hc_map_window.setWindowIcon(get_magnetic_icon(self.current_theme))
             
     def log(self, text):
         """Append text to the console output text widget."""
@@ -671,6 +810,7 @@ class SuiteLauncherWindow(QMainWindow):
                 try:
                     from kerr_looper_AG import MOKEImageSubtractor
                     window = MOKEImageSubtractor(theme=self.current_theme)
+                    window.setWindowIcon(get_magnetic_icon(self.current_theme))
                     
                     # Intercept closeEvent to clear reference
                     orig_close = window.closeEvent
@@ -701,6 +841,7 @@ class SuiteLauncherWindow(QMainWindow):
                 try:
                     from batch_processor import BatchProcessorGUI
                     window = BatchProcessorGUI(theme=self.current_theme, parent=self)
+                    window.setWindowIcon(get_magnetic_icon(self.current_theme))
                     
                     # Intercept closeEvent to clear reference
                     orig_close = window.closeEvent
@@ -731,6 +872,7 @@ class SuiteLauncherWindow(QMainWindow):
                 try:
                     from vector_analysis import VectorAnalysisGUI
                     window = VectorAnalysisGUI(theme=self.current_theme, parent=None)
+                    window.setWindowIcon(get_magnetic_icon(self.current_theme))
                     
                     # Intercept closeEvent to clear reference
                     orig_close = window.closeEvent
@@ -761,6 +903,7 @@ class SuiteLauncherWindow(QMainWindow):
                 try:
                     from drift_corrector import DriftCorrectorWindow
                     window = DriftCorrectorWindow(theme=self.current_theme)
+                    window.setWindowIcon(get_magnetic_icon(self.current_theme))
 
                     # Intercept closeEvent to clear reference
                     orig_close = window.closeEvent
@@ -791,6 +934,7 @@ class SuiteLauncherWindow(QMainWindow):
                 try:
                     from hc_map_tool import HcMapGUI
                     window = HcMapGUI(theme=self.current_theme)
+                    window.setWindowIcon(get_magnetic_icon(self.current_theme))
 
                     # Intercept closeEvent to clear reference
                     orig_close = window.closeEvent
