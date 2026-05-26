@@ -39,6 +39,7 @@ import matplotlib as mpl
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from shared_utils.image_processing import crop600
+from scipy.signal import fftconvolve
 
 
 
@@ -148,21 +149,48 @@ def estimate_shift_sqdiff(ref_patch_grad, target_img_grad, roi_r, roi_c, patch_h
 
     ncc_map = np.full((len(dy_vals), len(dx_vals)), float('inf'), dtype=np.float32)
 
-    for i, dy in enumerate(dy_vals):
-        for j, dx in enumerate(dx_vals):
-            # Sample the target patch at (roi_r+dy, roi_c+dx)
-            r0 = roi_r + dy
-            c0 = roi_c + dx
-            r1 = r0 + patch_h
-            c1 = c0 + patch_w
+    # Pre-cast reference patch to float32
+    ref_patch_32 = ref_patch_grad.astype(np.float32)
+    ref_sum_sq = np.sum(ref_patch_32 ** 2)
 
-            # Bounds check
-            if r0 < 0 or c0 < 0 or r1 > img_h or c1 > img_w:
-                continue
+    # Boundary coordinates of the sub-image needed in target_img_grad
+    r_min = roi_r - sw
+    r_max = roi_r + sw + patch_h
+    c_min = roi_c - sw
+    c_max = roi_c + sw + patch_w
 
-            tgt_patch = target_img_grad[r0:r1, c0:c1]
-            diff = ref_patch_grad.astype(np.float32) - tgt_patch.astype(np.float32)
-            ncc_map[i, j] = float(np.sum(diff ** 2))
+    r_min_clamped = max(0, r_min)
+    r_max_clamped = min(img_h, r_max)
+    c_min_clamped = max(0, c_min)
+    c_max_clamped = min(img_w, c_max)
+
+    if r_max_clamped > r_min_clamped and c_max_clamped > c_min_clamped:
+        target_sub = target_img_grad[r_min_clamped:r_max_clamped, c_min_clamped:c_max_clamped].astype(np.float32)
+        
+        if target_sub.shape[0] >= patch_h and target_sub.shape[1] >= patch_w:
+            # We compute cross correlation using fftconvolve.
+            # Flipped template is required for cross-correlation via convolution.
+            ref_flipped = ref_patch_32[::-1, ::-1]
+            cross_corr = fftconvolve(target_sub, ref_flipped, mode='valid')
+            
+            # Compute sum of target squared in each window
+            ones_kernel = np.ones((patch_h, patch_w), dtype=np.float32)
+            tgt_sum_sq = fftconvolve(target_sub**2, ones_kernel, mode='valid')
+            
+            sqdiff = ref_sum_sq + tgt_sum_sq - 2.0 * cross_corr
+            sqdiff = np.clip(sqdiff, 0, None)
+            
+            r0_vals = roi_r + dy_vals
+            c0_vals = roi_c + dx_vals
+            
+            valid_y = (r0_vals >= 0) & (r0_vals + patch_h <= img_h)
+            valid_x = (c0_vals >= 0) & (c0_vals + patch_w <= img_w)
+            
+            if np.any(valid_y) and np.any(valid_x):
+                y_indices = r0_vals[valid_y] - r_min_clamped
+                x_indices = c0_vals[valid_x] - c_min_clamped
+                
+                ncc_map[np.ix_(valid_y, valid_x)] = sqdiff[np.ix_(y_indices, x_indices)]
 
     # Find integer peak (minimum diff)
     peak_i, peak_j = np.unravel_index(np.argmin(ncc_map), ncc_map.shape)

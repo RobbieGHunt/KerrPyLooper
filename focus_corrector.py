@@ -24,8 +24,9 @@ def get_gradient_magnitude(img):
     Calculate Sobel gradient magnitude of an image.
     High-pass filters to isolate static defects from low-frequency domain features.
     """
-    dx = ndimage.sobel(img, axis=0)
-    dy = ndimage.sobel(img, axis=1)
+    img_f32 = img.astype(np.float32, copy=False)
+    dx = ndimage.sobel(img_f32, axis=0)
+    dy = ndimage.sobel(img_f32, axis=1)
     return np.sqrt(dx**2 + dy**2)
 
 def find_defect_roi(img, patch_size=128):
@@ -54,22 +55,38 @@ def find_defect_roi(img, patch_size=128):
 
     return (int(r_range[max_idx[0]]), int(c_range[max_idx[1]]))
 
+_ref_sobel_cache = {}
+
 def estimate_defocus(ref_img_norm, target_img_norm):
     """
     Find the Gaussian blur standard deviation (sigma) that, when applied
     to ref_img_norm, best matches the gradient magnitude of target_img_norm.
     """
-    target_grad = get_gradient_magnitude(target_img_norm)
+    ref_f32 = ref_img_norm.astype(np.float32, copy=False)
+    target_f32 = target_img_norm.astype(np.float32, copy=False)
+    
+    target_grad = get_gradient_magnitude(target_f32)
+    
+    ref_key = id(ref_img_norm)
+    if ref_key in _ref_sobel_cache:
+        ref_stacked = _ref_sobel_cache[ref_key]
+    else:
+        ref_dx = ndimage.sobel(ref_f32, axis=0)
+        ref_dy = ndimage.sobel(ref_f32, axis=1)
+        ref_stacked = np.stack([ref_dx, ref_dy], axis=0)
+        if len(_ref_sobel_cache) >= 16:
+            _ref_sobel_cache.pop(next(iter(_ref_sobel_cache)))
+        _ref_sobel_cache[ref_key] = ref_stacked
     
     def loss(sigma):
         if sigma <= 0.01:
-            blurred_ref = ref_img_norm
+            blurred = ref_stacked
         else:
-            blurred_ref = ndimage.gaussian_filter(ref_img_norm, sigma=sigma)
-        blurred_grad = get_gradient_magnitude(blurred_ref)
+            blurred = ndimage.gaussian_filter(ref_stacked, sigma=(0, sigma, sigma))
+        blurred_grad = np.sqrt(blurred[0]**2 + blurred[1]**2)
         return np.mean((target_grad - blurred_grad) ** 2)
     
-    res = minimize_scalar(loss, bounds=(0.0, 3.0), method='bounded')
+    res = minimize_scalar(loss, bounds=(0.0, 3.0), method='bounded', options={'xatol': 1e-3})
     return res.x
 
 def focus_correct_series(img_dir, txt_path, output_dir, balance=0.02):
