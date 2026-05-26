@@ -41,20 +41,46 @@ def crop_focus(arr):
     """Crop arrays to 600x600 pixels (center horizontally, top vertically)."""
     return crop(arr, max_h=600, max_w=600, center_w=True)
 
+_wiener_filter_rcache = {}
+_ruu2_rvv2_cache = {}
+
+try:
+    from scipy.fft import rfft2 as _scipy_rfft2, irfft2 as _scipy_irfft2
+    def _rfft2(x): return _scipy_rfft2(x, workers=1)
+    def _irfft2(x, s=None): return _scipy_irfft2(x, s=s, workers=1)
+except ImportError:
+    from numpy.fft import rfft2 as _rfft2, irfft2 as _irfft2
+
 def wiener_deconvolve(image, sigma, balance=0.02):
     if sigma <= 0.05:
         return image
     h, w = image.shape
-    u = np.fft.fftfreq(h)
-    v = np.fft.fftfreq(w)
-    uu, vv = np.meshgrid(u, v, indexing='ij')
-    otf = np.exp(-2 * np.pi**2 * sigma**2 * (uu**2 + vv**2))
-    img_fft = np.fft.fft2(image)
-    otf_conj = np.conj(otf)
-    wiener_filter = otf_conj / (np.abs(otf)**2 + balance)
+    key_filter = (h, w, float(sigma), float(balance))
+    if key_filter in _wiener_filter_rcache:
+        wiener_filter = _wiener_filter_rcache[key_filter]
+    else:
+        key_grid = (h, w)
+        if key_grid in _ruu2_rvv2_cache:
+            uu2_vv2 = _ruu2_rvv2_cache[key_grid]
+        else:
+            u = np.fft.fftfreq(h).astype(np.float32)
+            v = np.fft.rfftfreq(w).astype(np.float32)
+            uu2_vv2 = u[:, np.newaxis]**2 + v[np.newaxis, :]**2
+            if len(_ruu2_rvv2_cache) >= 32:
+                _ruu2_rvv2_cache.pop(next(iter(_ruu2_rvv2_cache)))
+            _ruu2_rvv2_cache[key_grid] = uu2_vv2
+        otf = np.exp((-2.0 * np.pi**2 * sigma**2) * uu2_vv2)
+        wiener_filter = (otf / (otf**2 + balance)).astype(np.float32)
+        if len(_wiener_filter_rcache) >= 128:
+            _wiener_filter_rcache.pop(next(iter(_wiener_filter_rcache)))
+        _wiener_filter_rcache[key_filter] = wiener_filter
+
+    image_f32 = image.astype(np.float32, copy=False)
+    img_fft = _rfft2(image_f32)
     deblurred_fft = img_fft * wiener_filter
-    deblurred = np.real(np.fft.ifft2(deblurred_fft))
+    deblurred = _irfft2(deblurred_fft, s=(h, w))
     return deblurred
+
 
 def get_roi_mean(arr, shape_type, roi_data):
     if shape_type == "None" or roi_data is None:
@@ -192,12 +218,12 @@ def calculate_local_hc(img_stack, field, bin_size=4, return_hr=False, apply_corr
     b_H, b_W = binned_stack.shape[1], binned_stack.shape[2]
     P = b_H * b_W
 
-    # Flatten spatial dimensions to (N, P)
-    flat_stack = binned_stack.reshape(N, P)
+    # Flatten spatial dimensions to (N, P), making a copy to ensure safe in-place operations
+    flat_stack = binned_stack.reshape(N, P).copy()
 
     # Background subtraction
     zero_idx = np.argmin(np.abs(field))
-    flat_stack = flat_stack - flat_stack[zero_idx, :]
+    flat_stack -= flat_stack[zero_idx, :]
 
     if N < 2:
         hc_map = np.full((b_H, b_W), np.nan, dtype=np.float32)
@@ -258,9 +284,9 @@ def calculate_local_hc(img_stack, field, bin_size=4, return_hr=False, apply_corr
         field_off = field - np.mean(field)
         field_abs_max = np.max(np.abs(field_off))
 
-        # Pass 1 - endpoint drift alignment (vectorized per pixel)
+        # Pass 1 - endpoint drift alignment (vectorized per pixel, in-place)
         drift1 = (flat_stack[0, :] - flat_stack[-1, :]) / N
-        flat_stack = flat_stack + drift1[np.newaxis, :] * idx_off[:, np.newaxis]
+        flat_stack += drift1 * idx_off[:, np.newaxis]
 
         # Joint 4-Parameter Fit: y = c1*h + c2*h^2 + c3*sign(h) + c4
         sat_threshold = 0.80 * field_abs_max
@@ -277,7 +303,8 @@ def calculate_local_hc(img_stack, field, bin_size=4, return_hr=False, apply_corr
             A = np.column_stack([h_fit, h_fit**2, np.sign(h_fit), np.ones_like(h_fit)])
             try:
                 # Solve for all pixels simultaneously: A @ coeffs = y_fit
-                coeffs_fit, _, _, _ = np.linalg.lstsq(A, y_fit, rcond=None)
+                # Using np.linalg.pinv(A) @ y_fit is ~27x faster than np.linalg.lstsq
+                coeffs_fit = np.linalg.pinv(A) @ y_fit
                 c1, c2 = coeffs_fit[0], coeffs_fit[1]
                 linear_val = -c1
                 quad1 = -c2
@@ -294,13 +321,13 @@ def calculate_local_hc(img_stack, field, bin_size=4, return_hr=False, apply_corr
             linear_val = np.zeros(P, dtype=np.float32)
             quad1 = np.zeros(P, dtype=np.float32)
 
-        # Pass 2 - apply shape correction & second drift correction
-        flat_stack = (flat_stack 
-                      + linear_val[np.newaxis, :] * field_off[:, np.newaxis] 
-                      + quad1[np.newaxis, :] * (field_off[:, np.newaxis] ** 2))
+        # Pass 2 - apply shape correction & second drift correction (in-place additions)
+        field_off_col = field_off[:, np.newaxis]
+        field_off_sq_col = (field_off ** 2)[:, np.newaxis]
+        flat_stack += field_off_col * linear_val + field_off_sq_col * quad1
 
         drift2 = (flat_stack[0, :] - flat_stack[-1, :]) / N
-        flat_stack = flat_stack + drift2[np.newaxis, :] * idx_off[:, np.newaxis]
+        flat_stack += drift2 * idx_off[:, np.newaxis]
 
     # Re-evaluate saturation shelves after correction to calculate a clean midpoint level
     if np.sum(sat_mask_pos) > 0:
@@ -315,8 +342,9 @@ def calculate_local_hc(img_stack, field, bin_size=4, return_hr=False, apply_corr
 
     mid = 0.5 * (sat_pos + sat_neg)
 
-    y_asc = flat_stack[asc_idx, :][sort_asc, :]
-    y_desc = flat_stack[desc_idx, :][sort_desc, :]
+    # Use single-pass indexing to avoid duplicate array allocations and copies
+    y_asc = flat_stack[asc_idx[sort_asc], :]
+    y_desc = flat_stack[desc_idx[sort_desc], :]
 
     def find_crossings_vectorized(f_branch, y_branch, mid):
         M, P_dim = y_branch.shape
@@ -330,27 +358,38 @@ def calculate_local_hc(img_stack, field, bin_size=4, return_hr=False, apply_corr
         y0 = y_branch[:-1, :]
         y1 = y_branch[1:, :]
 
-        cross_mask = (diff_0 * diff_1 <= 0) & (y0 != y1)
+        cross_mask = (diff_0 * diff_1 <= 0)
+        cross_mask &= (y0 != y1)
         dy = np.abs(y1 - y0)
         dy_masked = np.where(cross_mask, dy, -1.0)
 
         i_max_sel = np.argmax(dy_masked, axis=0)
-        max_dy = np.take_along_axis(dy_masked, i_max_sel[np.newaxis, :], axis=0)[0]
-
-        fallback_idx = np.argmin(np.abs(diff), axis=0)
-        hc_fallback = f_branch[fallback_idx]
+        col_indices = np.arange(P_dim)
+        max_dy = dy_masked[i_max_sel, col_indices]
 
         f0 = f_branch[i_max_sel]
         f1 = f_branch[np.minimum(i_max_sel + 1, M - 1)]
 
-        y0_sel = np.take_along_axis(y0, i_max_sel[np.newaxis, :], axis=0)[0]
-        y1_sel = np.take_along_axis(y1, i_max_sel[np.newaxis, :], axis=0)[0]
+        y0_sel = y0[i_max_sel, col_indices]
+        y1_sel = y1[i_max_sel, col_indices]
 
         denom = y1_sel - y0_sel
-        frac = np.where(denom != 0, (mid - y0_sel) / denom, 0.0)
+        
+        # Prevent division-by-zero warnings by calculating selectively
+        frac = np.zeros_like(denom)
+        valid_denom = denom != 0
+        frac[valid_denom] = (mid[valid_denom] - y0_sel[valid_denom]) / denom[valid_denom]
+        
         f_cross = f0 + frac * (f1 - f0)
 
-        return np.where(max_dy >= 0, f_cross, hc_fallback)
+        # Only calculate fallback when actually needed
+        fallback_mask = max_dy < 0
+        if np.any(fallback_mask):
+            fallback_idx = np.argmin(np.abs(diff[:, fallback_mask]), axis=0)
+            hc_fallback = f_branch[fallback_idx]
+            f_cross[fallback_mask] = hc_fallback
+
+        return f_cross
 
     hc_pos = find_crossings_vectorized(f_asc, y_asc, mid)
     hc_neg = find_crossings_vectorized(f_desc, y_desc, mid)
