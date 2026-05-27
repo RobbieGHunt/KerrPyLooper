@@ -33,6 +33,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QBrush, QFont
 from PyQt5.QtCore import Qt, QRect, QPoint, pyqtSignal, QSize, QRectF, QPointF
 import scipy.ndimage as ndimage
+from scipy.signal import fftconvolve
 from PIL import Image
 import pandas as pd
 import matplotlib as mpl
@@ -113,6 +114,8 @@ def robust_normalize_raw(arr):
 # Core drift estimation algorithm
 # ──────────────────────────────────────────────────────────────────────────────
 
+
+
 def estimate_shift_sqdiff(ref_patch_grad, target_img_grad, roi_r, roi_c, patch_h, patch_w, search_width):
     """
     Estimate (dy, dx) shift of target_img relative to ref using Sum of Squared
@@ -142,27 +145,48 @@ def estimate_shift_sqdiff(ref_patch_grad, target_img_grad, roi_r, roi_c, patch_h
     sw = search_width
     img_h, img_w = target_img_grad.shape
 
-    # Build a grid of candidate shifts
     dy_vals = np.arange(-sw, sw + 1)
     dx_vals = np.arange(-sw, sw + 1)
 
     ncc_map = np.full((len(dy_vals), len(dx_vals)), float('inf'), dtype=np.float32)
 
-    for i, dy in enumerate(dy_vals):
-        for j, dx in enumerate(dx_vals):
-            # Sample the target patch at (roi_r+dy, roi_c+dx)
-            r0 = roi_r + dy
-            c0 = roi_c + dx
-            r1 = r0 + patch_h
-            c1 = c0 + patch_w
+    # Fast SQDIFF via FFT
+    # We need to compute sqdiff for offsets corresponding to dy in [-sw, sw] and dx in [-sw, sw]
+    r_start = roi_r - sw
+    r_end = roi_r + patch_h + sw
+    c_start = roi_c - sw
+    c_end = roi_c + patch_w + sw
 
-            # Bounds check
-            if r0 < 0 or c0 < 0 or r1 > img_h or c1 > img_w:
-                continue
+    r_start_clip = max(0, r_start)
+    r_end_clip = min(img_h, r_end)
+    c_start_clip = max(0, c_start)
+    c_end_clip = min(img_w, c_end)
 
-            tgt_patch = target_img_grad[r0:r1, c0:c1]
-            diff = ref_patch_grad.astype(np.float32) - tgt_patch.astype(np.float32)
-            ncc_map[i, j] = float(np.sum(diff ** 2))
+    target_search = target_img_grad[r_start_clip:r_end_clip, c_start_clip:c_end_clip].astype(np.float32)
+    ref = ref_patch_grad.astype(np.float32)
+
+    # Check if target search is smaller than reference patch
+    if target_search.shape[0] < ref.shape[0] or target_search.shape[1] < ref.shape[1]:
+        return 0.0, 0.0, ncc_map
+
+    ref_rot = ref[::-1, ::-1]
+    cross_corr = fftconvolve(target_search, ref_rot, mode='valid')
+    target_sq = target_search ** 2
+    ones_ref = np.ones_like(ref)
+    target_sq_sum = fftconvolve(target_sq, ones_ref, mode='valid')
+    ref_sq_sum = np.sum(ref ** 2)
+
+    sqdiff = target_sq_sum - 2 * cross_corr + ref_sq_sum
+
+    # Map the computed sqdiff values back to the ncc_map grid
+    for i in range(sqdiff.shape[0]):
+        for j in range(sqdiff.shape[1]):
+            dy = r_start_clip + i - roi_r
+            dx = c_start_clip + j - roi_c
+            if -sw <= dy <= sw and -sw <= dx <= sw:
+                idx_y = dy + sw
+                idx_x = dx + sw
+                ncc_map[idx_y, idx_x] = max(0.0, float(sqdiff[i, j]))
 
     # Find integer peak (minimum diff)
     peak_i, peak_j = np.unravel_index(np.argmin(ncc_map), ncc_map.shape)
