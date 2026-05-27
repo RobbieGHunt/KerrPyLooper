@@ -265,6 +265,56 @@ class DmdhGUI(QWidget):
         mlayout.addWidget(splitter)
 
         apply_theme(self, self.theme)
+        self.draw_placeholder_plots()
+
+    def draw_placeholder_plots(self):
+        from gui_styles import get_theme_colors
+        colors = get_theme_colors(self.theme)
+        
+        # 1. Draw simulated dM/dH Frame on ax_diff
+        self.ax_diff.clear()
+        self.fig_diff.patch.set_facecolor(colors["card"])
+        self.ax_diff.set_facecolor(colors["bg"])
+        self.ax_diff.tick_params(colors=colors["text_muted"], labelsize=8)
+        
+        # Generate simulated domain switching frame
+        x = np.linspace(-3, 3, 200)
+        y = np.linspace(-3, 3, 200)
+        xx, yy = np.meshgrid(x, y)
+        # A curved domain wall switching front: exp(-(yy - sin(xx))**2 / 0.2)
+        wall_front = np.exp(-((yy - 0.5 * np.sin(xx)) ** 2) / 0.15)
+        # Add some noise
+        np.random.seed(42)
+        noise = np.random.normal(0, 0.15, wall_front.shape)
+        sim_diff = wall_front + noise
+        
+        self.ax_diff.imshow(sim_diff, cmap='seismic', vmin=-1.5, vmax=1.5, extent=[-3, 3, -3, 3])
+        self.ax_diff.text(0, 0, "dM/dH PREVIEW\nNo Data Loaded", color='white', 
+                          fontsize=12, fontweight='bold', ha='center', va='center',
+                          bbox=dict(facecolor='#1e293b', alpha=0.8, edgecolor='#334155', boxstyle='round,pad=0.5'))
+        self.ax_diff.set_title("dM/dH Map (Simulated Preview)", color=colors["text"])
+        self.fig_diff.tight_layout()
+        self.canvas_diff.draw()
+        
+        # 2. Draw simulated Iso-switching map on ax_iso
+        self.ax_iso.clear()
+        self.fig_iso.patch.set_facecolor(colors["card"])
+        self.ax_iso.set_facecolor(colors["bg"])
+        self.ax_iso.tick_params(colors=colors["text_muted"], labelsize=8)
+        
+        # Generate simulated pinning landscape (multiple Gaussians)
+        sim_iso = np.zeros_like(xx)
+        centers = [(-1.0, 1.0, 1.2), (1.0, -1.0, 0.8), (0.0, 0.0, 1.5), (-1.5, -1.5, 1.0), (1.5, 1.5, 0.9)]
+        for cx, cy, amp in centers:
+            sim_iso += amp * np.exp(-((xx - cx)**2 + (yy - cy)**2) / 0.6)
+        
+        im_iso = self.ax_iso.imshow(sim_iso, cmap='plasma', extent=[-3, 3, -3, 3])
+        self.ax_iso.text(0, 0, "COERCIVE LANDSCAPE PREVIEW\nNo Data Loaded", color='white', 
+                          fontsize=12, fontweight='bold', ha='center', va='center',
+                          bbox=dict(facecolor='#1e293b', alpha=0.8, edgecolor='#334155', boxstyle='round,pad=0.5'))
+        self.ax_iso.set_title("Iso-Switching Map (Simulated Preview)", color=colors["text"])
+        self.fig_iso.tight_layout()
+        self.canvas_iso.draw()
 
     def choose_directory(self):
         d = QFileDialog.getExistingDirectory(self, "Select Image Directory")

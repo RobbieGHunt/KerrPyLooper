@@ -538,8 +538,9 @@ class SusceptibilityWidget(QWidget):
         # Determine colors based on theme
         from gui_styles import get_theme_colors
         colors = get_theme_colors(self.theme)
-        line_color = QColor(colors["accent"])
-        grid_color = QColor(colors["border"])
+        accent_color = QColor(colors["accent"])
+        border_color = QColor(colors["border"])
+        bg_color = QColor(colors["bg"])
             
         w, h = self.width(), self.height()
         margin = 10
@@ -547,43 +548,81 @@ class SusceptibilityWidget(QWidget):
         dw, dh = w - 2 * margin, h - 2 * margin
         
         # Draw background grids/axes
-        pen_grid = QPen(grid_color, 1, Qt.DashLine)
+        pen_grid = QPen(border_color, 1, Qt.DashLine)
         painter.setPen(pen_grid)
-        baseline_y = cy + dh / 2.5
-        painter.drawLine(margin, int(baseline_y), w - margin, int(baseline_y))  # Horizontal axis (shifted down)
+        painter.drawLine(margin, int(cy), w - margin, int(cy))  # Horizontal axis
         painter.drawLine(int(cx), margin, int(cx), h - margin)  # Vertical axis
         
-        # Draw susceptibility peaks (dM/dH)
-        path = QPainterPath()
+        # Draw magnetization hysteresis loop in background (dashed, muted)
+        path_loop = QPainterPath()
+        steps = 50
+        hc = 0.3  # coercivity
+        k_loop = 4.5
         
-        steps = 60
-        hc = 0.35  # peak separation
-        k = 6.0   # sharpness of peaks
-        
-        # Draw the curve
-        first = True
+        # Lower branch (going left to right):
+        path_loop.moveTo(float(cx - dw / 2.0), float(cy - math.tanh(k_loop * (-1.0 - hc)) * (dh / 2.5)))
         for i in range(steps + 1):
             t = -1.0 + 2.0 * i / steps
-            # dM/dH susceptibility peak shape: sech^2(k*(t-hc)) + sech^2(k*(t+hc))
-            # sech(x) = 1.0 / cosh(x)
-            val1 = 1.0 / (math.cosh(k * (t - hc)) ** 2)
-            val2 = 1.0 / (math.cosh(k * (t + hc)) ** 2)
+            y = math.tanh(k_loop * (t - hc))
+            px = cx + t * (dw / 2.0)
+            py = cy - y * (dh / 2.5)
+            path_loop.lineTo(float(px), float(py))
+            
+        # Upper branch (going right to left):
+        for i in range(steps + 1):
+            t = 1.0 - 2.0 * i / steps
+            y = math.tanh(k_loop * (t + hc))
+            px = cx + t * (dw / 2.0)
+            py = cy - y * (dh / 2.5)
+            path_loop.lineTo(float(px), float(py))
+            
+        path_loop.closeSubpath()
+        
+        pen_loop = QPen(QColor(border_color.red(), border_color.green(), border_color.blue(), 140), 1.2, Qt.DashLine)
+        painter.setPen(pen_loop)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(path_loop)
+        
+        # Draw susceptibility peaks (dM/dH) in foreground (thick, solid accent)
+        path_susc = QPainterPath()
+        k_susc = 6.0
+        
+        first = True
+        baseline_y = cy + dh / 2.5
+        for i in range(steps + 1):
+            t = -1.0 + 2.0 * i / steps
+            val1 = 1.0 / (math.cosh(k_susc * (t - hc)) ** 2)
+            val2 = 1.0 / (math.cosh(k_susc * (t + hc)) ** 2)
             y = val1 + val2  # combined peaks
             
             px = cx + t * (dw / 2.0)
             py = baseline_y - y * (dh * 0.7)  # scale peak height
             
             if first:
-                path.moveTo(float(px), float(py))
+                path_susc.moveTo(float(px), float(py))
                 first = False
             else:
-                path.lineTo(float(px), float(py))
+                path_susc.lineTo(float(px), float(py))
                 
-        # Draw the curve line
-        pen_line = QPen(line_color, 3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-        painter.setPen(pen_line)
-        painter.setBrush(Qt.NoBrush)
-        painter.drawPath(path)
+        # Draw the susceptibility curve line
+        pen_susc = QPen(accent_color, 2.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen_susc)
+        painter.drawPath(path_susc)
+        
+        # Draw two small highlight dots at the peaks of dM/dH
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor(255, 255, 255, 220)))
+        
+        # Left peak
+        px1 = cx - hc * (dw / 2.0)
+        py1 = baseline_y - 1.05 * (dh * 0.7)
+        painter.drawEllipse(QPointF(px1, py1), 2.5, 2.5)
+        
+        # Right peak
+        px2 = cx + hc * (dw / 2.0)
+        py2 = baseline_y - 1.05 * (dh * 0.7)
+        painter.drawEllipse(QPointF(px2, py2), 2.5, 2.5)
+        
         painter.end()
 
 
