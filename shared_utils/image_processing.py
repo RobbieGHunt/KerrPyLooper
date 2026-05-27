@@ -99,7 +99,6 @@ def get_roi_mean(arr, shape_type, roi_data):
 
     return np.mean(arr)
 
-import concurrent.futures
 
 def extract_hc_from_loop(field, intensity):
     """Robustly extract global Hc from a single loop."""
@@ -277,7 +276,9 @@ def calculate_local_hc(img_stack, field, bin_size=4, return_hr=False, apply_corr
             A = np.column_stack([h_fit, h_fit**2, np.sign(h_fit), np.ones_like(h_fit)])
             try:
                 # Solve for all pixels simultaneously: A @ coeffs = y_fit
-                coeffs_fit, _, _, _ = np.linalg.lstsq(A, y_fit, rcond=None)
+                # Use pseudoinv for significant speedup vs lstsq with massive matrices
+                pseudoinv = np.linalg.pinv(A).astype(np.float32)
+                coeffs_fit = pseudoinv @ y_fit
                 c1, c2 = coeffs_fit[0], coeffs_fit[1]
                 linear_val = -c1
                 quad1 = -c2
@@ -295,12 +296,11 @@ def calculate_local_hc(img_stack, field, bin_size=4, return_hr=False, apply_corr
             quad1 = np.zeros(P, dtype=np.float32)
 
         # Pass 2 - apply shape correction & second drift correction
-        flat_stack = (flat_stack 
-                      + linear_val[np.newaxis, :] * field_off[:, np.newaxis] 
-                      + quad1[np.newaxis, :] * (field_off[:, np.newaxis] ** 2))
+        flat_stack += linear_val[np.newaxis, :] * field_off[:, np.newaxis]
+        flat_stack += quad1[np.newaxis, :] * (field_off[:, np.newaxis] ** 2)
 
         drift2 = (flat_stack[0, :] - flat_stack[-1, :]) / N
-        flat_stack = flat_stack + drift2[np.newaxis, :] * idx_off[:, np.newaxis]
+        flat_stack += drift2[np.newaxis, :] * idx_off[:, np.newaxis]
 
     # Re-evaluate saturation shelves after correction to calculate a clean midpoint level
     if np.sum(sat_mask_pos) > 0:
@@ -330,9 +330,18 @@ def calculate_local_hc(img_stack, field, bin_size=4, return_hr=False, apply_corr
         y0 = y_branch[:-1, :]
         y1 = y_branch[1:, :]
 
-        cross_mask = (diff_0 * diff_1 <= 0) & (y0 != y1)
+        # Memory optimized check using signbit and bitwise OR instead of multiplication
+        # (reduces peak memory overhead since large float32 multiplication arrays aren't created)
+        sign_diff = np.signbit(diff)
+        cross_mask = sign_diff[:-1, :] != sign_diff[1:, :]
+        cross_mask |= (diff_0 == 0) | (diff_1 == 0)
+        cross_mask &= (y0 != y1)
+
         dy = np.abs(y1 - y0)
-        dy_masked = np.where(cross_mask, dy, -1.0)
+
+        # Fast masked copy instead of np.where with full arrays
+        dy_masked = np.full_like(dy, -1.0)
+        np.copyto(dy_masked, dy, where=cross_mask)
 
         i_max_sel = np.argmax(dy_masked, axis=0)
         max_dy = np.take_along_axis(dy_masked, i_max_sel[np.newaxis, :], axis=0)[0]
