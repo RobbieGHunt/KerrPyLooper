@@ -84,7 +84,7 @@ TOOL_REGISTRY = [
         "subtitle": "Pinning Landscape Analysis",
         "description": "Calculate differential magnetization (dM/dH) to visualize domain wall pinning sites and create a complete 2D Iso-switching topographical map of the coercive landscape.",
         "script": "dmdh_tool.py",
-        "icon": "🏔️",
+        "icon": "📈",
         "prompt_directory": False,
     }
 ]
@@ -518,6 +518,76 @@ class HcMapPreviewWidget(QWidget):
 
 
 # ==============================================================================
+# CUSTOM SUSCEPTIBILITY PREVIEW WIDGET (ICON)
+# ==============================================================================
+class SusceptibilityWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(80, 80)
+        self.setMaximumSize(120, 120)
+        self.theme = "charcoal"
+        
+    def set_theme(self, theme):
+        self.theme = theme
+        self.update()
+        
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        
+        # Determine colors based on theme
+        from gui_styles import get_theme_colors
+        colors = get_theme_colors(self.theme)
+        line_color = QColor(colors["accent"])
+        grid_color = QColor(colors["border"])
+            
+        w, h = self.width(), self.height()
+        margin = 10
+        cx, cy = w / 2.0, h / 2.0
+        dw, dh = w - 2 * margin, h - 2 * margin
+        
+        # Draw background grids/axes
+        pen_grid = QPen(grid_color, 1, Qt.DashLine)
+        painter.setPen(pen_grid)
+        baseline_y = cy + dh / 2.5
+        painter.drawLine(margin, int(baseline_y), w - margin, int(baseline_y))  # Horizontal axis (shifted down)
+        painter.drawLine(int(cx), margin, int(cx), h - margin)  # Vertical axis
+        
+        # Draw susceptibility peaks (dM/dH)
+        path = QPainterPath()
+        
+        steps = 60
+        hc = 0.35  # peak separation
+        k = 6.0   # sharpness of peaks
+        
+        # Draw the curve
+        first = True
+        for i in range(steps + 1):
+            t = -1.0 + 2.0 * i / steps
+            # dM/dH susceptibility peak shape: sech^2(k*(t-hc)) + sech^2(k*(t+hc))
+            # sech(x) = 1.0 / cosh(x)
+            val1 = 1.0 / (math.cosh(k * (t - hc)) ** 2)
+            val2 = 1.0 / (math.cosh(k * (t + hc)) ** 2)
+            y = val1 + val2  # combined peaks
+            
+            px = cx + t * (dw / 2.0)
+            py = baseline_y - y * (dh * 0.7)  # scale peak height
+            
+            if first:
+                path.moveTo(float(px), float(py))
+                first = False
+            else:
+                path.lineTo(float(px), float(py))
+                
+        # Draw the curve line
+        pen_line = QPen(line_color, 3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        painter.setPen(pen_line)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPath(path)
+        painter.end()
+
+
+# ==============================================================================
 # TOOL CARD COMPONENT
 # ==============================================================================
 class ToolCardWidget(QFrame):
@@ -530,6 +600,7 @@ class ToolCardWidget(QFrame):
         self.drift_widget = None
         self.batch_widget = None
         self.hc_map_widget = None
+        self.dmdh_widget = None
         
         # Setup vertical layout
         layout = QVBoxLayout(self)
@@ -570,6 +641,13 @@ class ToolCardWidget(QFrame):
             icon_layout = QHBoxLayout()
             icon_layout.addStretch()
             icon_layout.addWidget(self.hc_map_widget)
+            icon_layout.addStretch()
+            layout.addLayout(icon_layout)
+        elif tool_config["id"] == "dmdh_mapper":
+            self.dmdh_widget = SusceptibilityWidget(self)
+            icon_layout = QHBoxLayout()
+            icon_layout.addStretch()
+            icon_layout.addWidget(self.dmdh_widget)
             icon_layout.addStretch()
             layout.addLayout(icon_layout)
         else:
@@ -626,6 +704,8 @@ class ToolCardWidget(QFrame):
             self.batch_widget.set_theme(theme)
         if self.hc_map_widget:
             self.hc_map_widget.set_theme(theme)
+        if self.dmdh_widget:
+            self.dmdh_widget.set_theme(theme)
 
 
 # ==============================================================================
