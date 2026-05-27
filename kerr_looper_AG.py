@@ -9,6 +9,8 @@ import sys
 import concurrent.futures
 import os
 import numpy as np
+from shared_utils.ml_enhancement import SimpleMLEngine
+
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QFileDialog, QVBoxLayout, QPushButton,
     QListWidget, QLabel, QMessageBox, QHBoxLayout, QSlider,
@@ -1793,6 +1795,9 @@ class MOKEImageSubtractor(QWidget):
         self.mean_index = None
         self.mean_field = None
         self.last_loop_was_roi = False
+        self.ml_engine = SimpleMLEngine()
+        self.ml_enhanced = False
+
         self.init_ui()
 
     def init_ui(self):
@@ -1821,6 +1826,13 @@ class MOKEImageSubtractor(QWidget):
         self.btn_save.setEnabled(False)
         self.btn_save.setToolTip("Set a background image and select an image to subtract first")
         left_layout.addWidget(self.btn_save)
+
+        self.btn_enhance = QPushButton("Enhance (ML Denoise/SR)")
+        self.btn_enhance.clicked.connect(self.apply_ml_enhancement)
+        self.btn_enhance.setEnabled(False)
+        self.btn_enhance.setToolTip("Set a background image and select an image to subtract first")
+        left_layout.addWidget(self.btn_enhance)
+
         self.btn_make_loop = QPushButton("Make Loop (Plot Hysteresis)")
         self.btn_make_loop.clicked.connect(self.run_subtraction_loop)
         self.btn_make_loop.setEnabled(False)
@@ -2099,6 +2111,9 @@ class MOKEImageSubtractor(QWidget):
             self.btn_make_loop.setToolTip("Load a directory with a mapping .txt file first to make a loop")
             self.btn_save.setEnabled(False)
             self.btn_save.setToolTip("Set a background image and select an image to subtract first")
+            if hasattr(self, 'btn_enhance'):
+                self.btn_enhance.setEnabled(False)
+                self.btn_enhance.setToolTip("Set a background image and select an image to subtract first")
             self.loop_field = None
             self.loop_indices = None
             self.loop_intens_txt = None
@@ -2361,8 +2376,14 @@ class MOKEImageSubtractor(QWidget):
         if res_idx >= 0:
             self.show_subtracted_image(res_idx)
 
+
     def show_subtracted_image(self, idx):
+        self.ml_enhanced = False
+        if hasattr(self, 'btn_enhance'):
+            self.btn_enhance.setText("Enhance (ML Denoise/SR)")
+
         if idx < 0 or idx >= len(self.image_files):
+
             return
         img_file = self.image_files[idx]
         img_path = os.path.join(self.img_dir, img_file)
@@ -2465,7 +2486,10 @@ class MOKEImageSubtractor(QWidget):
             self.show_current_subtracted_image_contrast_only()
             self.current_result_filename = f"{os.path.splitext(img_file)[0]}_contrast.png"
             self.btn_save.setEnabled(True)
-            self.btn_save.setToolTip("Save the currently displayed subtracted image")  # Enable save for subtracted image
+            self.btn_save.setToolTip("Save the currently displayed subtracted image")
+            if hasattr(self, 'btn_enhance'):
+                self.btn_enhance.setEnabled(True)
+                self.btn_enhance.setToolTip("Enhance the currently displayed subtracted image")
         except Exception as e:
             self.lbl_img.setText(f"Error: {e}")
             self.current_difference_img = None
@@ -2530,6 +2554,27 @@ class MOKEImageSubtractor(QWidget):
         self.lbl_img.setPixmap(pix)
         self.update_roi_spinbox_ranges(pix.width(), pix.height())
         self.current_difference_img = show_img
+
+
+    def apply_ml_enhancement(self):
+        if self.current_difference_arr_raw is None:
+            return
+
+        if not self.ml_enhanced:
+            # Apply ML Enhancement
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            try:
+                self.current_difference_arr_raw = self.ml_engine.enhance(self.current_difference_arr_raw)
+                self.ml_enhanced = True
+                self.btn_enhance.setText("Revert Enhancement")
+                self.show_current_subtracted_image_contrast_only()
+            finally:
+                QApplication.restoreOverrideCursor()
+        else:
+            # Revert to original subtracted image by re-computing
+            self.ml_enhanced = False
+            self.btn_enhance.setText("Enhance (ML Denoise/SR)")
+            self.show_subtracted_image(self.list_results.currentRow())
 
     def save_current_result(self):
         if self.current_difference_img is not None:
