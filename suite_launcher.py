@@ -543,85 +543,105 @@ class SusceptibilityWidget(QWidget):
         bg_color = QColor(colors["bg"])
             
         w, h = self.width(), self.height()
-        margin = 10
+        margin = 12
         cx, cy = w / 2.0, h / 2.0
         dw, dh = w - 2 * margin, h - 2 * margin
         
-        # Draw background grids/axes
-        pen_grid = QPen(border_color, 1, Qt.DashLine)
+        # 1. Draw outer boundary box (card style)
+        painter.setBrush(QBrush(bg_color))
+        painter.setPen(QPen(border_color, 1.5, Qt.SolidLine))
+        painter.drawRoundedRect(QRectF(cx - dw/2 - 2, cy - dh/2 - 2, dw + 4, dh + 4), 6.0, 6.0)
+        
+        # 2. Draw background scientific grid
+        pen_grid = QPen(QColor(border_color.red(), border_color.green(), border_color.blue(), 100), 1, Qt.DashLine)
         painter.setPen(pen_grid)
-        painter.drawLine(margin, int(cy), w - margin, int(cy))  # Horizontal axis
-        painter.drawLine(int(cx), margin, int(cx), h - margin)  # Vertical axis
         
-        # Draw magnetization hysteresis loop in background (dashed, muted)
-        path_loop = QPainterPath()
-        steps = 50
-        hc = 0.3  # coercivity
-        k_loop = 4.5
+        # Vertical grid lines
+        painter.drawLine(int(cx - dw / 4.0), int(cy - dh / 2.0), int(cx - dw / 4.0), int(cy + dh / 2.0))
+        painter.drawLine(int(cx), int(cy - dh / 2.0), int(cx), int(cy + dh / 2.0))
+        painter.drawLine(int(cx + dw / 4.0), int(cy - dh / 2.0), int(cx + dw / 4.0), int(cy + dh / 2.0))
         
-        # Lower branch (going left to right):
-        path_loop.moveTo(float(cx - dw / 2.0), float(cy - math.tanh(k_loop * (-1.0 - hc)) * (dh / 2.5)))
-        for i in range(steps + 1):
-            t = -1.0 + 2.0 * i / steps
-            y = math.tanh(k_loop * (t - hc))
-            px = cx + t * (dw / 2.0)
-            py = cy - y * (dh / 2.5)
-            path_loop.lineTo(float(px), float(py))
-            
-        # Upper branch (going right to left):
-        for i in range(steps + 1):
-            t = 1.0 - 2.0 * i / steps
-            y = math.tanh(k_loop * (t + hc))
-            px = cx + t * (dw / 2.0)
-            py = cy - y * (dh / 2.5)
-            path_loop.lineTo(float(px), float(py))
-            
-        path_loop.closeSubpath()
+        # Horizontal grid lines
+        painter.drawLine(int(cx - dw / 2.0), int(cy - dh / 4.0), int(cx + dw / 2.0), int(cy - dh / 4.0))
+        painter.drawLine(int(cx - dw / 2.0), int(cy), int(cx + dw / 2.0), int(cy))
+        painter.drawLine(int(cx - dw / 2.0), int(cy + dh / 4.0), int(cx + dw / 2.0), int(cy + dh / 4.0))
         
-        pen_loop = QPen(QColor(border_color.red(), border_color.green(), border_color.blue(), 140), 1.2, Qt.DashLine)
-        painter.setPen(pen_loop)
-        painter.setBrush(Qt.NoBrush)
-        painter.drawPath(path_loop)
+        # Baseline
+        baseline_y = cy + dh / 3.0
+        pen_base = QPen(border_color, 2, Qt.SolidLine)
+        painter.setPen(pen_base)
+        painter.drawLine(int(cx - dw / 2.0), int(baseline_y), int(cx + dw / 2.0), int(baseline_y))
         
-        # Draw susceptibility peaks (dM/dH) in foreground (thick, solid accent)
+        # 3. Calculate paths for peaks (dM/dH)
         path_susc = QPainterPath()
-        k_susc = 6.0
+        path_fill = QPainterPath()
         
-        first = True
-        baseline_y = cy + dh / 2.5
-        for i in range(steps + 1):
-            t = -1.0 + 2.0 * i / steps
+        steps = 80
+        hc = 0.35  # coercivity peak separation
+        k_susc = 5.5
+        
+        # Map values
+        def get_pt(t):
             val1 = 1.0 / (math.cosh(k_susc * (t - hc)) ** 2)
             val2 = 1.0 / (math.cosh(k_susc * (t + hc)) ** 2)
             y = val1 + val2  # combined peaks
-            
             px = cx + t * (dw / 2.0)
-            py = baseline_y - y * (dh * 0.7)  # scale peak height
+            py = baseline_y - y * (dh * 0.65)
+            return px, py
             
-            if first:
-                path_susc.moveTo(float(px), float(py))
-                first = False
-            else:
-                path_susc.lineTo(float(px), float(py))
-                
-        # Draw the susceptibility curve line
-        pen_susc = QPen(accent_color, 2.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        # Build paths
+        px0, py0 = get_pt(-1.0)
+        path_susc.moveTo(float(px0), float(py0))
+        path_fill.moveTo(float(cx - dw / 2.0), float(baseline_y))
+        path_fill.lineTo(float(px0), float(py0))
+        
+        for i in range(1, steps + 1):
+            t = -1.0 + 2.0 * i / steps
+            px, py = get_pt(t)
+            path_susc.lineTo(float(px), float(py))
+            path_fill.lineTo(float(px), float(py))
+            
+        path_fill.lineTo(float(cx + dw / 2.0), float(baseline_y))
+        path_fill.closeSubpath()
+        
+        # 4. Fill area under the peaks with a gradient
+        from PyQt5.QtGui import QLinearGradient
+        grad = QLinearGradient(cx, cy - dh/2, cx, baseline_y)
+        grad.setColorAt(0.0, QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 90))
+        grad.setColorAt(1.0, QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 10))
+        painter.setBrush(QBrush(grad))
+        painter.setPen(Qt.NoPen)
+        painter.drawPath(path_fill)
+        
+        # 5. Draw bold susceptibility line
+        pen_susc = QPen(accent_color, 3.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         painter.setPen(pen_susc)
         painter.drawPath(path_susc)
         
-        # Draw two small highlight dots at the peaks of dM/dH
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(QColor(255, 255, 255, 220)))
+        # 6. Draw glowing data nodes at the peak maxima
+        node_radius = 4.0
         
         # Left peak
-        px1 = cx - hc * (dw / 2.0)
-        py1 = baseline_y - 1.05 * (dh * 0.7)
-        painter.drawEllipse(QPointF(px1, py1), 2.5, 2.5)
+        n1_x, n1_y = get_pt(-hc)
+        # Glow ring
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 80)))
+        painter.drawEllipse(QPointF(n1_x, n1_y), node_radius + 3.0, node_radius + 3.0)
+        # Inner white dot
+        painter.setPen(QPen(accent_color, 2, Qt.SolidLine))
+        painter.setBrush(QBrush(QColor(255, 255, 255)))
+        painter.drawEllipse(QPointF(n1_x, n1_y), node_radius, node_radius)
         
         # Right peak
-        px2 = cx + hc * (dw / 2.0)
-        py2 = baseline_y - 1.05 * (dh * 0.7)
-        painter.drawEllipse(QPointF(px2, py2), 2.5, 2.5)
+        n2_x, n2_y = get_pt(hc)
+        # Glow ring
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor(accent_color.red(), accent_color.green(), accent_color.blue(), 80)))
+        painter.drawEllipse(QPointF(n2_x, n2_y), node_radius + 3.0, node_radius + 3.0)
+        # Inner white dot
+        painter.setPen(QPen(accent_color, 2, Qt.SolidLine))
+        painter.setBrush(QBrush(QColor(255, 255, 255)))
+        painter.drawEllipse(QPointF(n2_x, n2_y), node_radius, node_radius)
         
         painter.end()
 
