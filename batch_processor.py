@@ -289,7 +289,8 @@ def auto_correct_coeffs(field: np.ndarray, intensity: np.ndarray,
         
         A = np.column_stack([h_fit, h_fit**2, np.sign(h_fit), np.ones_like(h_fit)])
         try:
-            coeffs_fit, _, _, _ = np.linalg.lstsq(A, y_fit, rcond=None)
+            # ⚡ Bolt: Use pinv instead of lstsq for solving wide linear systems
+            coeffs_fit = np.linalg.pinv(A).astype(np.float32) @ y_fit
             c1, c2, c3, c4 = coeffs_fit[0], coeffs_fit[1], coeffs_fit[2], coeffs_fit[3]
             linear_val = -float(c1)
             quad1 = -float(c2)

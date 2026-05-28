@@ -277,7 +277,8 @@ def calculate_local_hc(img_stack, field, bin_size=4, return_hr=False, apply_corr
             A = np.column_stack([h_fit, h_fit**2, np.sign(h_fit), np.ones_like(h_fit)])
             try:
                 # Solve for all pixels simultaneously: A @ coeffs = y_fit
-                coeffs_fit, _, _, _ = np.linalg.lstsq(A, y_fit, rcond=None)
+                # ⚡ Bolt: Use pinv instead of lstsq for solving wide linear systems, provides massive CPU speedups
+                coeffs_fit = np.linalg.pinv(A).astype(np.float32) @ y_fit
                 c1, c2 = coeffs_fit[0], coeffs_fit[1]
                 linear_val = -c1
                 quad1 = -c2

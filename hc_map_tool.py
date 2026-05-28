@@ -228,7 +228,8 @@ class HcMapGUI(QWidget):
             y_fit = intensity[fit_mask]
             A = np.column_stack([h_fit, h_fit**2, np.sign(h_fit), np.ones_like(h_fit)])
             try:
-                coeffs_fit, _, _, _ = np.linalg.lstsq(A, y_fit, rcond=None)
+                # ⚡ Bolt: Use pinv instead of lstsq for solving wide linear systems
+                coeffs_fit = np.linalg.pinv(A).astype(np.float32) @ y_fit
                 linear_val = -coeffs_fit[0]
                 quad1 = -coeffs_fit[1]
             except Exception:
