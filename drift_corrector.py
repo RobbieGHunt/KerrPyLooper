@@ -33,6 +33,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QBrush, QFont
 from PyQt5.QtCore import Qt, QRect, QPoint, pyqtSignal, QSize, QRectF, QPointF
 import scipy.ndimage as ndimage
+import scipy.signal
 from PIL import Image
 import pandas as pd
 import matplotlib as mpl
@@ -142,7 +143,26 @@ def estimate_shift_sqdiff(ref_patch_grad, target_img_grad, roi_r, roi_c, patch_h
     sw = search_width
     img_h, img_w = target_img_grad.shape
 
-    # Build a grid of candidate shifts
+    # We only need to search in a specific window
+    r_min = max(0, roi_r - sw)
+    r_max = min(img_h, roi_r + patch_h + sw)
+    c_min = max(0, roi_c - sw)
+    c_max = min(img_w, roi_c + patch_w + sw)
+
+    search_area = target_img_grad[r_min:r_max, c_min:c_max].astype(np.float64)
+    ref_patch = ref_patch_grad.astype(np.float64)
+
+    # ⚡ Bolt: Expand the quadratic formula and use FFT convolutions for exact and efficient matching
+    T_sq = search_area ** 2
+    R_sq_sum = np.sum(ref_patch ** 2)
+
+    ones = np.ones_like(ref_patch)
+    T_sq_sum = scipy.signal.fftconvolve(T_sq, ones, mode='valid')
+
+    TR_sum = scipy.signal.fftconvolve(search_area, ref_patch[::-1, ::-1], mode='valid')
+
+    sqdiff_map = T_sq_sum + R_sq_sum - 2 * TR_sum
+
     dy_vals = np.arange(-sw, sw + 1)
     dx_vals = np.arange(-sw, sw + 1)
 
@@ -150,19 +170,18 @@ def estimate_shift_sqdiff(ref_patch_grad, target_img_grad, roi_r, roi_c, patch_h
 
     for i, dy in enumerate(dy_vals):
         for j, dx in enumerate(dx_vals):
-            # Sample the target patch at (roi_r+dy, roi_c+dx)
             r0 = roi_r + dy
             c0 = roi_c + dx
             r1 = r0 + patch_h
             c1 = c0 + patch_w
 
-            # Bounds check
             if r0 < 0 or c0 < 0 or r1 > img_h or c1 > img_w:
                 continue
 
-            tgt_patch = target_img_grad[r0:r1, c0:c1]
-            diff = ref_patch_grad.astype(np.float32) - tgt_patch.astype(np.float32)
-            ncc_map[i, j] = float(np.sum(diff ** 2))
+            idx_r = r0 - r_min
+            idx_c = c0 - c_min
+
+            ncc_map[i, j] = sqdiff_map[idx_r, idx_c]
 
     # Find integer peak (minimum diff)
     peak_i, peak_j = np.unravel_index(np.argmin(ncc_map), ncc_map.shape)
