@@ -17,6 +17,11 @@ Created in 2026.
 """
 
 import sys
+import io
+if sys.stdout is None:
+    sys.stdout = io.StringIO()
+if sys.stderr is None:
+    sys.stderr = io.StringIO()
 import os
 import math
 from PyQt5.QtWidgets import (
@@ -1297,6 +1302,39 @@ class SuiteLauncherWindow(QMainWindow):
 # ENTRY POINT
 # ==============================================================================
 def main():
+    import os
+    if os.environ.get("DIAGNOSTIC_LAUNCH") == "1":
+        import traceback
+        log_path = os.path.abspath("launch_diagnosis.txt")
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write("Starting compiled launcher diagnostic...\n")
+            f.flush()
+            tools = [
+                {"id": "kerr_looper", "name": "Kerr MOKE Looper", "module": "kerr_looper_AG"},
+                {"id": "batch_processor", "name": "Batch Loop Processor", "module": "batch_processor"},
+                {"id": "vector_analysis", "name": "Vector Maps", "module": "vector_analysis"},
+                {"id": "drift_corrector", "name": "Drift Corrector", "module": "drift_corrector"},
+                {"id": "hc_map", "name": "Local Hc Map", "module": "hc_map_tool"},
+                {"id": "dmdh_mapper", "name": "dM/dH Mapper", "module": "dmdh_tool"}
+            ]
+            success_count = 0
+            for t in tools:
+                f.write(f"\nTesting import for: {t['name']} ({t['module']})...\n")
+                f.flush()
+                try:
+                    # Import the module
+                    mod = __import__(t['module'])
+                    f.write(f"-> SUCCESS: Imported {t['module']}\n")
+                    f.flush()
+                    success_count += 1
+                except Exception as e:
+                    f.write(f"-> EXCEPTION importing {t['module']}: {e}\n")
+                    f.write(traceback.format_exc() + "\n")
+                    f.flush()
+            f.write(f"\nResult: {success_count}/{len(tools)} sub-packages imported successfully.\n")
+            f.flush()
+        sys.exit(0 if success_count == len(tools) else 1)
+
     # Enable high DPI scaling if supported (must be set before QApplication creation)
     if hasattr(Qt, 'AA_EnableHighDpiScaling'):
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)

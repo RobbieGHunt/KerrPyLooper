@@ -267,35 +267,169 @@ def auto_correct_coeffs(field: np.ndarray, intensity: np.ndarray,
     intensity1 = intensity + drift1 * idx_off
 
     # ------------------------------------------------------------------
-    # Joint 4-Parameter Fit: y = c1*h + c2*h^2 + c3*sign(h) + c4
-    # simultaneously fits Faraday slope (c1) and Cotton-Mouton (c2)
-    # to the saturation regions of both branches combined.
+    # Branch separation (ascending vs descending field sweep)
     # ------------------------------------------------------------------
-    sat_threshold = 0.80 * field_abs_max
-    fit_mask = np.abs(field_off) > sat_threshold
-    
-    # If too few points, dynamically lower the threshold to 50%
-    if np.sum(fit_mask) < 4:
-        sat_threshold = 0.50 * field_abs_max
-        fit_mask = np.abs(field_off) > sat_threshold
+    i_min = int(np.argmin(field))
+    i_max = int(np.argmax(field))
+    if i_min < i_max:
+        asc_idx  = np.arange(i_min, i_max + 1)
+        desc_idx = np.concatenate([np.arange(i_max, len(field)),
+                                   np.arange(0, i_min + 1)])
+    else:
+        desc_idx = np.arange(i_max, i_min + 1)
+        asc_idx  = np.concatenate([np.arange(i_min, len(field)),
+                                   np.arange(0, i_max + 1)])
 
-    linear_val = 0.0
-    quad1 = 0.0
+    # ------------------------------------------------------------------
+    # Quick Hc pre-estimate to guard against high-coercivity loops
+    # ------------------------------------------------------------------
+    mid_rough = 0.5 * (float(np.max(intensity1)) + float(np.min(intensity1)))
+    shifted = intensity1 - mid_rough
+    sign_diff = np.diff(np.sign(shifted))
+    crossing_idx = np.nonzero(sign_diff)[0]
+
+    asc_crossings = []
+    desc_crossings = []
+    if len(crossing_idx) > 0:
+        for ci in crossing_idx:
+            y0, y1 = shifted[ci], shifted[ci + 1]
+            f0, f1 = field_off[ci], field_off[ci + 1]
+            if y0 != y1:
+                frac = -y0 / (y1 - y0)
+                f_cross = f0 + frac * (f1 - f0)
+                if ci in asc_idx:
+                    asc_crossings.append(f_cross)
+                elif ci in desc_idx:
+                    desc_crossings.append(f_cross)
+
+    hc_pos_rough = float(np.mean(asc_crossings)) if asc_crossings else 0.0
+    hc_neg_rough = float(np.mean(desc_crossings)) if desc_crossings else 0.0
+
+    # Determine adaptive sat_threshold for high field ranges
+    sat_threshold = 0.85 * field_abs_max
+    rough_hc_abs = max(abs(hc_pos_rough), abs(hc_neg_rough))
+    if rough_hc_abs > 0.65 * field_abs_max:
+        sat_threshold = min(0.95 * field_abs_max, rough_hc_abs + 0.10 * field_abs_max)
+        print_func(f"  [info] High coercivity detected (Hc ~ {rough_hc_abs:.2f} mT), trying sat threshold {sat_threshold:.2f} mT")
+
+    # Calculate 4 regions (before-coercivity and high-field for each sweep)
+    H_min_off = float(np.min(field_off))
+    H_max_off = float(np.max(field_off))
+
+    # 'Before coercivity' thresholds (80% of the range from absolute max starting field to coercivity)
+    thresh_asc = H_min_off + 0.8 * (hc_pos_rough - H_min_off)
+    thresh_desc = H_max_off - 0.8 * (H_max_off - hc_neg_rough)
+
+    # Initialize shelves for ascending branch
+    sat_pos_asc = field_off[asc_idx] > sat_threshold
+    sat_neg_asc = field_off[asc_idx] < thresh_asc
+
+    # Initialize shelves for descending branch
+    sat_pos_desc = field_off[desc_idx] > thresh_desc
+    sat_neg_desc = field_off[desc_idx] < -sat_threshold
+
+    # Fallback to standard shelves if we don't have enough points
+    if np.sum(sat_pos_asc) < 2 or np.sum(sat_neg_asc) < 2 or np.sum(sat_pos_desc) < 2 or np.sum(sat_neg_desc) < 2:
+        sat_pos_asc = field_off[asc_idx] > sat_threshold
+        sat_neg_asc = field_off[asc_idx] < -sat_threshold
+        sat_pos_desc = field_off[desc_idx] > sat_threshold
+        sat_neg_desc = field_off[desc_idx] < -sat_threshold
+
+    # ------------------------------------------------------------------
+    # Linear Faraday: fit positive and negative saturation shelves
+    # independently on each branch, then average.
+    # ------------------------------------------------------------------
+    slopes = []
+    # Ascending branch
+    f_asc = field_off[asc_idx]
+    y_asc = intensity1[asc_idx]
+    branch_slopes = []
+    if np.sum(sat_pos_asc) >= 2:
+        p_pos = np.polyfit(f_asc[sat_pos_asc], y_asc[sat_pos_asc], 1)
+        branch_slopes.append(p_pos[0])
+    if np.sum(sat_neg_asc) >= 2:
+        p_neg = np.polyfit(f_asc[sat_neg_asc], y_asc[sat_neg_asc], 1)
+        branch_slopes.append(p_neg[0])
+    if branch_slopes:
+        slopes.append(np.mean(branch_slopes))
+
+    # Descending branch
+    f_desc = field_off[desc_idx]
+    y_desc = intensity1[desc_idx]
+    branch_slopes = []
+    if np.sum(sat_pos_desc) >= 2:
+        p_pos = np.polyfit(f_desc[sat_pos_desc], y_desc[sat_pos_desc], 1)
+        branch_slopes.append(p_pos[0])
+    if np.sum(sat_neg_desc) >= 2:
+        p_neg = np.polyfit(f_desc[sat_neg_desc], y_desc[sat_neg_desc], 1)
+        branch_slopes.append(p_neg[0])
+    if branch_slopes:
+        slopes.append(np.mean(branch_slopes))
+
+    linear_val = -float(np.mean(slopes)) if slopes else 0.0
+    intensity2 = intensity1 + linear_val * field_off
+
+    # ------------------------------------------------------------------
+    # Residual quadratic (Cotton–Mouton): fit on the step-subtracted background
+    # ------------------------------------------------------------------
+    sat_pos_all = np.zeros(len(field), dtype=bool)
+    sat_pos_all[asc_idx] = sat_pos_asc
+    sat_pos_all[desc_idx] = sat_pos_desc
+
+    sat_neg_all = np.zeros(len(field), dtype=bool)
+    sat_neg_all[asc_idx] = sat_neg_asc
+    sat_neg_all[desc_idx] = sat_neg_desc
+
+    sat_all = sat_pos_all | sat_neg_all
+
+    quad1           = 0.0
     quad_offset_val = 0.0
 
-    if np.sum(fit_mask) >= 4:
-        h_fit = field_off[fit_mask]
-        y_fit = intensity1[fit_mask]
-        
-        A = np.column_stack([h_fit, h_fit**2, np.sign(h_fit), np.ones_like(h_fit)])
+    if np.sum(sat_pos_all) >= 2 and np.sum(sat_neg_all) >= 2:
+        # Subtract shelf means to get background-only signal at saturation
+        M_pos = np.mean(intensity2[sat_pos_all])
+        M_neg = np.mean(intensity2[sat_neg_all])
+        y_bg = intensity2.copy()
+        y_bg[sat_pos_all] -= M_pos
+        y_bg[sat_neg_all] -= M_neg
+
         try:
-            coeffs_fit, _, _, _ = np.linalg.lstsq(A, y_fit, rcond=None)
-            c1, c2, c3, c4 = coeffs_fit[0], coeffs_fit[1], coeffs_fit[2], coeffs_fit[3]
-            linear_val = -float(c1)
-            quad1 = -float(c2)
-            quad_offset_val = 0.0
+            p2 = np.polyfit(field_off[sat_all], y_bg[sat_all], 2)
+            a2, b2 = float(p2[0]), float(p2[1])
+            if abs(a2) > 0:
+                candidate_offset = -b2 / (2.0 * a2)
+                if abs(candidate_offset) <= field_abs_max:
+                    # Physically plausible vertex position – use full quadratic
+                    quad1           = -a2
+                    quad_offset_val = candidate_offset
+                else:
+                    # Vertex far outside field range – absorb only linear part
+                    linear_val -= b2
         except Exception as exc:
-            print_func(f"Error in joint 4-parameter least-squares fit: {exc}")
+            print_func(f"Error in residual quadratic fit: {exc}")
+
+    # ------------------------------------------------------------------
+    # Secondary shelf linear fit: calculate and remove residual slope
+    # directly from the shelves to ensure the final gradient is zero.
+    # ------------------------------------------------------------------
+    intensity_temp = intensity1 + linear_val * field_off + quad1 * (field_off - quad_offset_val) ** 2
+    slopes_res = []
+    if np.sum(sat_pos_all) >= 2:
+        try:
+            p_pos_res = np.polyfit(field_off[sat_pos_all], intensity_temp[sat_pos_all], 1)
+            slopes_res.append(p_pos_res[0])
+        except Exception:
+            pass
+    if np.sum(sat_neg_all) >= 2:
+        try:
+            p_neg_res = np.polyfit(field_off[sat_neg_all], intensity_temp[sat_neg_all], 1)
+            slopes_res.append(p_neg_res[0])
+        except Exception:
+            pass
+    if slopes_res:
+        slope_res = float(np.mean(slopes_res))
+        linear_val -= slope_res
+        print_func(f"  [info] Secondary linear adjustment: subtracted residual slope {slope_res:.6f}")
 
     # ------------------------------------------------------------------
     # Pass 2 – second drift correction after all shape corrections
@@ -421,7 +555,9 @@ def compute_hc_hr(field: np.ndarray,
 
     hc_avg = None
     if hc_pos is not None and hc_neg is not None:
-        hc_avg = 0.5 * (abs(hc_pos) + abs(hc_neg))
+        magnitude = 0.5 * (abs(hc_pos) + abs(hc_neg))
+        polarity = 1.0 if (hc_pos - hc_neg) >= 0 else -1.0
+        hc_avg = polarity * magnitude
 
     # ------------------------------------------------------------------
     # Remanence: intensity at the field point nearest zero on EACH branch.
@@ -812,25 +948,38 @@ def process_directory(data_dir: str, analysis_dir: str, dir_name: str,
     )
 
 
+def _pool_initializer():
+    """
+    One-time initializer for each worker process in the pool.
+    Pre-imports heavy modules so the first task doesn't pay import costs.
+    Called automatically by Pool(initializer=...).
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    # Force numpy, PIL to be fully loaded in this process
+    import numpy as np  # noqa: F401
+    from PIL import Image  # noqa: F401
+
+
 def process_directory_worker(args):
     """
     Worker function for parallel pools.
     args: tuple of (data_dir, analysis_dir, dir_name, drift, linear, quad, cancel_event)
     """
-    # Set headless backend immediately for worker process
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-    except Exception:
-        pass
+    import time as _time
+    import os as _os
 
     data_dir, analysis_dir, dir_name, drift, linear, quad, cancel_event = args
     log_lines = []
+    worker_pid = _os.getpid()
+    t_start = _time.time()
     
     def buffered_print(*msg_args, **kwargs):
         sep = kwargs.get('sep', ' ')
         msg_str = sep.join(map(str, msg_args))
         log_lines.append(msg_str)
+
+    buffered_print(f"  [worker PID {worker_pid}] Started at {_time.strftime('%H:%M:%S')}")
         
     try:
         result = process_directory(
@@ -838,15 +987,18 @@ def process_directory_worker(args):
             drift_corr=drift, linear_corr=linear, quad_corr=quad,
             print_func=buffered_print, cancel_event=cancel_event
         )
+        elapsed = _time.time() - t_start
+        buffered_print(f"  [worker PID {worker_pid}] Finished in {elapsed:.1f}s")
         return result, log_lines, None
     except Exception as exc:
         import traceback
-        err_str = f"Error processing {dir_name}: {exc}\n{traceback.format_exc()}"
+        elapsed = _time.time() - t_start
+        err_str = f"Error processing {dir_name} (PID {worker_pid}, {elapsed:.1f}s): {exc}\n{traceback.format_exc()}"
         return None, log_lines, err_str
 
 
 
-def _run_batch_processes(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, max_workers, cancel_event, thread_ref, results, total_dirs):
+def _run_batch_processes(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, max_workers, cancel_event, thread_ref, results, total_dirs, pool=None):
     import multiprocessing
     import time
 
@@ -858,11 +1010,16 @@ def _run_batch_processes(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_c
         dir_name = rel_path.replace(os.sep, "_")
         tasks.append((d, analysis_dir, dir_name, drift_corr, linear_corr, quad_corr, None))
 
-    num_procs = max_workers if max_workers else max(1, multiprocessing.cpu_count() - 1)
-    print(f"\n[info] Spinning up background processes... (This usually takes 5-10 seconds on Windows)")
-    print(f"Starting Process Pool with {num_procs} workers...")
+    # Use pre-warmed pool if provided, otherwise create a new one
+    own_pool = pool is None
+    if own_pool:
+        num_procs = max_workers if max_workers else max(1, multiprocessing.cpu_count() - 1)
+        print(f"\n[info] Spinning up background processes...")
+        print(f"Starting Process Pool with {num_procs} workers...")
+        pool = multiprocessing.Pool(processes=num_procs, initializer=_pool_initializer)
+    else:
+        print(f"[info] Using pre-warmed process pool (workers already initialized).")
 
-    pool = multiprocessing.Pool(processes=num_procs)
     if thread_ref is not None:
         thread_ref.active_pool = pool
 
@@ -1018,11 +1175,32 @@ def run_batch(parent_dir: str, drift_corr: bool = True, linear_corr: bool = True
         print(f"Workers: {max_workers}")
     print(f"{'='*60}")
 
+    # ---- Pre-warm process pool while discovering directories ----
+    # On Windows (spawn), pool creation imports numpy/PIL/matplotlib in each
+    # worker — this takes 5-10s. By starting the pool BEFORE the network
+    # directory scan, the two costs overlap instead of stacking.
+    pool = None
+    if mode == "processes":
+        import multiprocessing as _mp
+        num_procs = max_workers if max_workers else max(1, _mp.cpu_count() - 1)
+        print(f"\n[info] Pre-warming process pool ({num_procs} workers)...")
+        t_pool = time.time()
+        pool = _mp.Pool(processes=num_procs, initializer=_pool_initializer)
+        if thread_ref is not None:
+            thread_ref.active_pool = pool
+        print(f"[info] Pool created in {time.time() - t_pool:.1f}s (workers importing modules in background)")
+
     # ---- Discover sub-directories ----
+    print(f"\n[info] Scanning for data directories...")
+    t_disc = time.time()
     sub_dirs = discover_data_dirs(parent_dir)
+    print(f"[info] Discovery complete: found {len(sub_dirs)} directories in {time.time() - t_disc:.1f}s")
 
     if not sub_dirs:
         print("[error] No sub-directories found in the selected folder.")
+        if pool is not None:
+            pool.terminate()
+            pool.join()
         return
 
     # ---- Create Analysis output folder ----
@@ -1035,7 +1213,7 @@ def run_batch(parent_dir: str, drift_corr: bool = True, linear_corr: bool = True
     start_time = time.time()
 
     if mode == "processes":
-        _run_batch_processes(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, max_workers, cancel_event, thread_ref, results, total_dirs)
+        _run_batch_processes(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, max_workers, cancel_event, thread_ref, results, total_dirs, pool=pool)
     elif mode == "threads":
         _run_batch_threads(sub_dirs, analysis_dir, drift_corr, linear_corr, quad_corr, max_workers, cancel_event, thread_ref, results, total_dirs)
     else:  # sequential mode
