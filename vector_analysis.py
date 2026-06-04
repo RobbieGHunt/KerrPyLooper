@@ -26,6 +26,7 @@ from PIL import Image
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.patches import Rectangle, Ellipse, Polygon as MplPolygon
@@ -332,17 +333,17 @@ class VectorAnalysisGUI(QWidget):
         
         self.spin_y_end = QSpinBox()
         self.spin_y_end.setRange(1, 5000)
-        self.spin_y_end.setValue(300)
+        self.spin_y_end.setValue(600)
         self.spin_y_end.valueChanged.connect(self.on_crop_spinbox_changed)
         
         self.spin_x_start = QSpinBox()
         self.spin_x_start.setRange(0, 5000)
-        self.spin_x_start.setValue(290)
+        self.spin_x_start.setValue(0)
         self.spin_x_start.valueChanged.connect(self.on_crop_spinbox_changed)
         
         self.spin_x_end = QSpinBox()
         self.spin_x_end.setRange(1, 5000)
-        self.spin_x_end.setValue(665)
+        self.spin_x_end.setValue(900)
         self.spin_x_end.valueChanged.connect(self.on_crop_spinbox_changed)
         
         crop_layout.addRow("Y Start:", self.spin_y_start)
@@ -392,6 +393,11 @@ class VectorAnalysisGUI(QWidget):
         self.chk_sbar.setChecked(True)
         self.chk_sbar.stateChanged.connect(self.update_plots)
         vis_layout.addRow(self.chk_sbar)
+        
+        self.chk_show_field = QCheckBox("Show Field Value")
+        self.chk_show_field.setChecked(True)
+        self.chk_show_field.stateChanged.connect(self.update_plots)
+        vis_layout.addRow(self.chk_show_field)
         
         self.cmb_lens = QComboBox()
         self.cmb_lens.addItems(sorted(self.lens_info.keys(), key=int))
@@ -502,7 +508,7 @@ class VectorAnalysisGUI(QWidget):
         tab_vector_layout = QVBoxLayout(tab_vector)
         tab_vector_layout.setContentsMargins(0, 0, 0, 0)
         tab_vector_layout.addLayout(create_slider_layout())
-        self.fig_vector = plt.figure(figsize=(10, 6), tight_layout=True)
+        self.fig_vector = Figure(figsize=(10, 6), tight_layout=True)
         self.canvas_vector = FigureCanvas(self.fig_vector)
         self.toolbar_vector = NavigationToolbar(self.canvas_vector, self)
         tab_vector_layout.addWidget(self.toolbar_vector)
@@ -515,7 +521,7 @@ class VectorAnalysisGUI(QWidget):
         tab_loops_layout = QVBoxLayout(tab_loops)
         tab_loops_layout.setContentsMargins(0, 0, 0, 0)
         tab_loops_layout.addLayout(create_slider_layout())
-        self.fig_loops = plt.figure(figsize=(10, 6), tight_layout=True)
+        self.fig_loops = Figure(figsize=(10, 6), tight_layout=True)
         self.canvas_loops = FigureCanvas(self.fig_loops)
         self.toolbar_loops = NavigationToolbar(self.canvas_loops, self)
         tab_loops_layout.addWidget(self.toolbar_loops)
@@ -527,7 +533,7 @@ class VectorAnalysisGUI(QWidget):
         tab_compare_layout = QVBoxLayout(tab_compare)
         tab_compare_layout.setContentsMargins(0, 0, 0, 0)
         tab_compare_layout.addLayout(create_slider_layout())
-        self.fig_compare = plt.figure(figsize=(10, 6), tight_layout=True)
+        self.fig_compare = Figure(figsize=(10, 6), tight_layout=True)
         self.canvas_compare = FigureCanvas(self.fig_compare)
         self.toolbar_compare = NavigationToolbar(self.canvas_compare, self)
         tab_compare_layout.addWidget(self.toolbar_compare)
@@ -544,7 +550,7 @@ class VectorAnalysisGUI(QWidget):
         tab_full_layout.addWidget(self.lbl_guide)
         tab_full_layout.addLayout(create_slider_layout())
         
-        self.fig_full = plt.figure(figsize=(10, 6), tight_layout=True)
+        self.fig_full = Figure(figsize=(10, 6), tight_layout=True)
         self.canvas_full = FigureCanvas(self.fig_full)
         self.toolbar_full = NavigationToolbar(self.canvas_full, self)
         
@@ -881,11 +887,11 @@ class VectorAnalysisGUI(QWidget):
             self.spin_y_start.setRange(0, height - 1)
             self.spin_y_end.setRange(1, height)
             
-            # Adjust default crop values if they exceed image boundaries
-            self.spin_x_start.setValue(min(290, width // 4))
-            self.spin_x_end.setValue(min(665, width * 3 // 4))
+            # By default, use the whole image for the vector analysis
+            self.spin_x_start.setValue(0)
+            self.spin_x_end.setValue(width)
             self.spin_y_start.setValue(0)
-            self.spin_y_end.setValue(min(300, height // 2))
+            self.spin_y_end.setValue(height)
             
             self.lbl_dims.setText(f"Dimensions: {width} x {height} ({len(self.filenames)} fields)")
             
@@ -1282,8 +1288,15 @@ class VectorAnalysisGUI(QWidget):
         
         text_color = get_theme_colors(self.theme)["text"]
         
-        self.ax_loop_x = self.fig_loops.add_subplot(2, 1, 1)
-        self.ax_loop_y = self.fig_loops.add_subplot(2, 1, 2)
+        import matplotlib.gridspec as gridspec
+        # GridSpec: Left column (col 0) is the mini vector image, Right column (col 1) contains the two loops
+        gs = gridspec.GridSpec(2, 2, width_ratios=[1.2, 1.0], figure=self.fig_loops)
+        
+        self.ax_loop_vector = self.fig_loops.add_subplot(gs[:, 0])
+        self.ax_loop_vector.axis('off')
+        
+        self.ax_loop_x = self.fig_loops.add_subplot(gs[0, 1])
+        self.ax_loop_y = self.fig_loops.add_subplot(gs[1, 1])
         
         # Plot loop X
         self.ax_loop_x.plot(self.fields, self.Mx, 'o-', label="Mx loop signal", color="#6366f1", markersize=4)
@@ -1440,6 +1453,12 @@ class VectorAnalysisGUI(QWidget):
                     ax_map.text(bar_x + bar_length / 2.0, bar_y - 10, f"{bar_size} µm",
                                 ha='center', va='bottom', color='white', fontsize=16, fontweight='bold')
                                 
+            # Field Value Text Box Overlay
+            if self.chk_show_field.isChecked():
+                ax_map.text(0.05, 0.95, f"{field:.2f} mT", transform=ax_map.transAxes,
+                            color='white', fontsize=18, fontweight='bold', ha='left', va='top',
+                            bbox=dict(facecolor='black', alpha=0.6, edgecolor='none', boxstyle='round,pad=0.3'))
+                                
             # Polar Legend (Right, 20% width)
             ax_polar = self.fig_vector.add_axes([0.80, 0.30, 0.16, 0.40], projection="polar")
             ax_polar.set_facecolor(get_theme_colors(self.theme)["bg"])
@@ -1459,8 +1478,29 @@ class VectorAnalysisGUI(QWidget):
             
             self.canvas_vector.draw()
             
-        # 2. Update Tab 2: Hysteresis indicator dots
+        # 2. Update Tab 2: Hysteresis indicator dots & miniature vector image
         elif self.tabs.currentIndex() == 1:
+            # Draw the mini vector map on ax_loop_vector
+            if hasattr(self, 'ax_loop_vector'):
+                self.ax_loop_vector.clear()
+                self.ax_loop_vector.imshow(theta, vmin=-np.pi, vmax=np.pi, cmap=self.bright_cmap)
+                self.ax_loop_vector.axis('off')
+                
+                # Optionally add quiver arrows to the miniature loop vector plot if checked
+                if self.chk_quiver.isChecked():
+                    skip = self.spin_quiver_skip.value()
+                    Ny, Nx = theta.shape
+                    xx = np.arange(0, Nx, skip)
+                    yy = np.arange(0, Ny, skip)
+                    XX, YY = np.meshgrid(xx, yy)
+                    self.ax_loop_vector.quiver(XX, YY, vx[::skip, ::skip], -vy[::skip, ::skip], pivot='mid', color='black', alpha=0.9)
+                
+                # Checkbox for Show Field Value on vector images
+                if self.chk_show_field.isChecked():
+                    self.ax_loop_vector.text(0.05, 0.95, f"{field:.2f} mT", transform=self.ax_loop_vector.transAxes,
+                                             color='white', fontsize=12, fontweight='bold', ha='left', va='top',
+                                             bbox=dict(facecolor='black', alpha=0.6, edgecolor='none', boxstyle='round,pad=0.3'))
+                
             # Remove previous current indicators if any
             if hasattr(self, 'ax_loop_x'):
                 # Pop out the dots/lines if we plotted them last time
@@ -1786,7 +1826,8 @@ class VectorAnalysisGUI(QWidget):
                 
                 # Create a simple figure matching image size in inches
                 img_w, img_h = frames[0].size
-                fig_anim, ax_anim = plt.subplots(figsize=(img_w/dpi, img_h/dpi), dpi=dpi)
+                fig_anim = Figure(figsize=(img_w/dpi, img_h/dpi), dpi=dpi)
+                ax_anim = fig_anim.add_subplot(1, 1, 1)
                 fig_anim.patch.set_facecolor('none')
                 ax_anim.axis('off')
                 fig_anim.subplots_adjust(left=0, right=1, bottom=0, top=1)
@@ -1802,8 +1843,6 @@ class VectorAnalysisGUI(QWidget):
                         # Update progress for the remaining 20%
                         self.progress_bar.setValue(int(80 + (idx + 1) / N * 20))
                         QApplication.processEvents()
-                
-                plt.close(fig_anim)
                 
             QMessageBox.information(
                 self, "Movie Saved",

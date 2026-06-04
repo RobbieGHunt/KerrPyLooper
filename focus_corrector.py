@@ -5,7 +5,7 @@ from PIL import Image
 import scipy.ndimage as ndimage
 import pandas as pd
 from scipy.optimize import minimize_scalar
-import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from shared_utils.image_processing import crop_focus, wiener_deconvolve
 
 def normalize_image(img):
@@ -162,17 +162,17 @@ def focus_correct_series(img_dir, txt_path, output_dir, balance=0.02):
     print(f"\nDefocus curve fit: sigma = {p[0]:.2e} * H^2 + {p[1]:.2e} * H + {p[2]:.4f}")
     
     # Generate and save diagnostic plot
-    plt.figure(figsize=(8, 5))
-    plt.scatter(fields, sigmas, color='b', alpha=0.6, label='Estimated Defocus')
-    plt.plot(np.sort(fields), np.polyval(p, np.sort(fields)), color='r', lw=2, label='Quadratic Fit')
-    plt.xlabel('Magnetic Field (mT)')
-    plt.ylabel('Defocus Sigma (pixels)')
-    plt.title('Field-Dependent Out-of-Plane Defocus')
-    plt.grid(True)
-    plt.legend()
+    fig = Figure(figsize=(8, 5))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.scatter(fields, sigmas, color='b', alpha=0.6, label='Estimated Defocus')
+    ax.plot(np.sort(fields), np.polyval(p, np.sort(fields)), color='r', lw=2, label='Quadratic Fit')
+    ax.set_xlabel('Magnetic Field (mT)')
+    ax.set_ylabel('Defocus Sigma (pixels)')
+    ax.set_title('Field-Dependent Out-of-Plane Defocus')
+    ax.grid(True)
+    ax.legend()
     plot_path = os.path.join(output_dir, "focus_drift_analysis.png")
-    plt.savefig(plot_path, dpi=150)
-    plt.close()
+    fig.savefig(plot_path, dpi=150)
     print(f"Saved diagnostic plot: {plot_path}")
     
     # Correct and save the images

@@ -34,7 +34,7 @@ import threading
 import numpy as np
 from PIL import Image
 import matplotlib
-matplotlib.use("Agg")
+from matplotlib.figure import Figure
 
 # Add script directory to sys.path to ensure gui_styles import works
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -638,9 +638,8 @@ def discover_data_dirs(parent_dir: str) -> list:
 
 def save_loop_plot(field: np.ndarray, ycorr: np.ndarray,
                    hc_hr: dict, title: str, save_path: str):
-    """Save a hysteresis loop figure with Hc/Hr annotations."""
-    import matplotlib.pyplot as plt
-    fig, ax = plt.subplots(figsize=(6, 4.5))
+    fig = Figure(figsize=(6, 4.5))
+    ax = fig.add_subplot(1, 1, 1)
     ax.plot(field, ycorr, "o-", color="#1F4E79", lw=1.5, markersize=3,
             label="MOKE intensity")
 
@@ -679,7 +678,6 @@ def save_loop_plot(field: np.ndarray, ycorr: np.ndarray,
     ax.legend(loc="best", fontsize=9, frameon=True, framealpha=0.9)
     fig.tight_layout()
     fig.savefig(save_path, dpi=200)
-    plt.close(fig)
 
 
 def save_loop_data(field: np.ndarray, raw_intens: np.ndarray,
@@ -740,7 +738,8 @@ def save_summary_plots(results: list, analysis_dir: str):
     hc_steps_valid = [(s, v) for s, v in zip(steps, hc_vals) if v is not None]
     if hc_steps_valid:
         xs, ys = zip(*hc_steps_valid)
-        fig, ax = plt.subplots(figsize=(6, 4))
+        fig = Figure(figsize=(6, 4))
+        ax = fig.add_subplot(1, 1, 1)
         ax.plot(xs, ys, "o-", color="#1F4E79", lw=1.8, markersize=7)
         ax.set_xlabel("Step Number", fontsize=12)
         ax.set_ylabel("Coercive Field Hc (mT)", fontsize=12)
@@ -749,14 +748,14 @@ def save_summary_plots(results: list, analysis_dir: str):
         ax.set_xticks(xs)
         fig.tight_layout()
         fig.savefig(os.path.join(analysis_dir, "Hc_vs_step.png"), dpi=200)
-        plt.close(fig)
         print(f"  [ok] Saved Hc_vs_step.png")
 
     # --- |Hr| (squareness) vs. step ---
     hr_steps_valid = [(s, v) for s, v in zip(steps, hr_vals) if v is not None]
     if hr_steps_valid:
         xs, ys = zip(*hr_steps_valid)
-        fig, ax = plt.subplots(figsize=(6, 4))
+        fig = Figure(figsize=(6, 4))
+        ax = fig.add_subplot(1, 1, 1)
         ax.plot(xs, ys, "s-", color="#E65100", lw=1.8, markersize=7)
         ax.set_xlabel("Step Number", fontsize=12)
         ax.set_ylabel("|Hr| – Squareness ratio", fontsize=12)
@@ -766,14 +765,14 @@ def save_summary_plots(results: list, analysis_dir: str):
         ax.set_xticks(xs)
         fig.tight_layout()
         fig.savefig(os.path.join(analysis_dir, "Hr_vs_step.png"), dpi=200)
-        plt.close(fig)
         print(f"  [ok] Saved Hr_vs_step.png")
 
     # --- Per-branch Hr↑ / Hr↓ vs. step ---
     hr_a = [r.get("hr_asc")  for r in stepped]
     hr_d = [r.get("hr_desc") for r in stepped]
     if any(v is not None for v in hr_a) or any(v is not None for v in hr_d):
-        fig, ax = plt.subplots(figsize=(6, 4))
+        fig = Figure(figsize=(6, 4))
+        ax = fig.add_subplot(1, 1, 1)
         if any(v is not None for v in hr_a):
             ax.plot(steps, hr_a, "s-", color="#E65100", lw=1.8, markersize=7, label="Hr(asc)")
         if any(v is not None for v in hr_d):
@@ -786,7 +785,6 @@ def save_summary_plots(results: list, analysis_dir: str):
         ax.legend(fontsize=10)
         fig.tight_layout()
         fig.savefig(os.path.join(analysis_dir, "Hr_branches_vs_step.png"), dpi=200)
-        plt.close(fig)
         print(f"  [ok] Saved Hr_branches_vs_step.png")
 
     # --- Summary CSV ---

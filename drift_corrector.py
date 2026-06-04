@@ -1434,8 +1434,9 @@ class DriftCorrectorWindow(QMainWindow):
     def _save_drift_plot(self, out_dir):
         """Save the drift analysis plot as a PNG."""
         try:
-            import matplotlib.pyplot as plt
-            fig, ax = plt.subplots(figsize=(8, 4))
+            from matplotlib.figure import Figure
+            fig = Figure(figsize=(8, 4))
+            ax = fig.add_subplot(1, 1, 1)
             fields = self.loop_field if self.loop_field is not None else np.arange(len(self.shifts))
             dys = np.array([s[0] for s in self.shifts])
             dxs = np.array([s[1] for s in self.shifts])
@@ -1450,7 +1451,6 @@ class DriftCorrectorWindow(QMainWindow):
             plot_path = os.path.join(out_dir, "drift_correction_analysis.png")
             fig.tight_layout()
             fig.savefig(plot_path, dpi=150)
-            plt.close(fig)
             self._log(f"Drift plot saved: {plot_path}")
         except Exception as e:
             self._log(f"Could not save drift plot: {e}")
