@@ -18,6 +18,20 @@ Created in 2026.
 
 import sys
 import io
+import operator
+import types
+# NumPy 2.x namespace compatibility shim for older dependencies (e.g. SciPy, scikit-image)
+try:
+    import numpy as _np
+    _np.core = _np._core
+    sys.modules["numpy.core"] = _np._core
+    for _name, _obj in list(_np._core.__dict__.items()):
+        if isinstance(_obj, type(sys)):
+            sys.modules[f"numpy.core.{_name}"] = _obj
+    del _name, _obj, _np
+except Exception:
+    pass
+
 if sys.stdout is None:
     sys.stdout = io.StringIO()
 if sys.stderr is None:

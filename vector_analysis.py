@@ -19,6 +19,20 @@ Created in 2026.
 
 import sys
 import os
+import operator
+import types
+# NumPy 2.x namespace compatibility shim for older dependencies (e.g. SciPy, scikit-image)
+try:
+    import numpy as _np
+    _np.core = _np._core
+    sys.modules["numpy.core"] = _np._core
+    for _name, _obj in list(_np._core.__dict__.items()):
+        if isinstance(_obj, type(sys)):
+            sys.modules[f"numpy.core.{_name}"] = _obj
+    del _name, _obj, _np
+except Exception:
+    pass
+
 import json
 import numpy as np
 import pandas as pd
