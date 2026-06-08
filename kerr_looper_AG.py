@@ -119,10 +119,11 @@ def normalized_for_display(arr, scale=None, contrast=0.5, use_clahe=False):
             scale = np.std(arr) if np.std(arr) > 0 else 1.0
         arr_disp = np.arcsinh(arr / scale)
         arr_disp -= arr_disp.min()
-        if arr_disp.ptp() == 0:
+        ptp_val = np.ptp(arr_disp)
+        if ptp_val == 0:
             arr_disp[:] = 0
         else:
-            arr_disp /= arr_disp.ptp()
+            arr_disp /= ptp_val
         arr_disp = (arr_disp * 255)
     arr_disp = 127.5 + contrast * (arr_disp - 127.5)
     arr_disp = np.clip(arr_disp, 0, 255).astype(np.uint8)
@@ -1010,12 +1011,18 @@ class LoopCorrectionPanel(QWidget):
 
     def z_drift_toggled(self, state):
         if self.parent_widget:
-            self.parent_widget.request_loop_update()
+            if self.parent_widget.loop_intens_subtracted is not None:
+                self.parent_widget.run_subtraction_loop()
+            else:
+                self.parent_widget.request_loop_update()
             self.parent_widget.show_current_subtracted_image_contrast_only()
 
     def z_method_changed(self, idx):
         if self.parent_widget:
-            self.parent_widget.request_loop_update()
+            if self.parent_widget.loop_intens_subtracted is not None:
+                self.parent_widget.run_subtraction_loop()
+            else:
+                self.parent_widget.request_loop_update()
             self.parent_widget.show_current_subtracted_image_contrast_only()
 
     def z_slider_changed(self, val):
@@ -1024,7 +1031,10 @@ class LoopCorrectionPanel(QWidget):
         self.spin_z_quad.setValue(coeff_val)
         self.spin_z_quad.blockSignals(False)
         if self.parent_widget:
-            self.parent_widget.request_loop_update()
+            if self.parent_widget.loop_intens_subtracted is not None:
+                self.parent_widget.run_subtraction_loop()
+            else:
+                self.parent_widget.request_loop_update()
             self.parent_widget.show_current_subtracted_image_contrast_only()
 
     def z_spinbox_changed(self, val):
@@ -1032,7 +1042,10 @@ class LoopCorrectionPanel(QWidget):
         self.sld_z_quad.setValue(int(val * 10))
         self.sld_z_quad.blockSignals(False)
         if self.parent_widget:
-            self.parent_widget.request_loop_update()
+            if self.parent_widget.loop_intens_subtracted is not None:
+                self.parent_widget.run_subtraction_loop()
+            else:
+                self.parent_widget.request_loop_update()
             self.parent_widget.show_current_subtracted_image_contrast_only()
 
     def set_z_coeff(self, val):
@@ -1101,7 +1114,10 @@ class LoopCorrectionPanel(QWidget):
 
             self.chk_z_drift.setChecked(True)
             self.set_z_coeff(a_units)
-            self.parent_widget.request_loop_update()
+            if self.parent_widget.loop_intens_subtracted is not None:
+                self.parent_widget.run_subtraction_loop()
+            else:
+                self.parent_widget.request_loop_update()
             self.parent_widget.show_current_subtracted_image_contrast_only()
             
             # Inform user about selected defect ROI
@@ -1462,7 +1478,7 @@ class LoopCorrectionPanel(QWidget):
         )
         if self.normalize:
             arr_corr -= arr_corr.min()
-            ptp = arr_corr.ptp()
+            ptp = np.ptp(arr_corr)
             if ptp == 0:
                 arr_corr[:] = 0
             else:
@@ -2207,6 +2223,8 @@ class MOKEImageSubtractor(QWidget):
                     
                 self.update_spinboxes_from_roi()
                 self.lbl_img.update()
+                if self.loop_intens_subtracted is not None:
+                    self.run_subtraction_loop()
 
     def update_roi_spinbox_ranges(self, pw, ph):
         self.spin_roi_x.setRange(0, pw - 1)
@@ -2272,9 +2290,13 @@ class MOKEImageSubtractor(QWidget):
             self.spin_roi_h.blockSignals(False)
             
         self.lbl_img.update()
+        if self.loop_intens_subtracted is not None:
+            self.run_subtraction_loop()
 
     def on_roi_changed(self):
         self.update_spinboxes_from_roi()
+        if self.lbl_img.drag_mode is None and self.loop_intens_subtracted is not None:
+            self.run_subtraction_loop()
 
     def clear_roi(self):
         self.cmb_roi_shape.setCurrentIndex(0)
@@ -2576,6 +2598,9 @@ class MOKEImageSubtractor(QWidget):
         res_idx = self.list_results.currentRow()
         if res_idx >= 0:
             self.show_subtracted_image(res_idx)
+            
+        if self.loop_intens_subtracted is not None:
+            self.run_subtraction_loop()
 
     def show_subtracted_image(self, idx):
         if idx < 0 or idx >= len(self.image_files):

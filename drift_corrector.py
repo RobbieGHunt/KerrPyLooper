@@ -95,7 +95,7 @@ def normalized_for_display(arr, contrast=1.0):
         scale = 1.0
     arr_d = np.arcsinh(arr / scale)
     arr_d -= arr_d.min()
-    ptp = arr_d.ptp()
+    ptp = np.ptp(arr_d)
     if ptp == 0:
         arr_d[:] = 0
     else:
