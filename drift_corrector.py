@@ -507,6 +507,7 @@ class DriftCorrectorWindow(QMainWindow):
         self.btn_set_ref.setObjectName("LaunchButton")
         self.btn_set_ref.clicked.connect(self._set_reference)
         self.btn_set_ref.setEnabled(False)
+        self.btn_set_ref.setToolTip("Select an image directory first")
         left_layout.addWidget(self.btn_set_ref)
 
         self.lbl_ref_info = QLabel("Reference: (not set)")
@@ -588,18 +589,21 @@ class DriftCorrectorWindow(QMainWindow):
         self.btn_estimate.setObjectName("LaunchButton")
         self.btn_estimate.clicked.connect(self._run_estimation)
         self.btn_estimate.setEnabled(False)
+        self.btn_estimate.setToolTip("Set a reference image and drag a ROI first")
         left_layout.addWidget(self.btn_estimate)
 
         self.btn_abort = QPushButton("⏹  Abort")
         self.btn_abort.setObjectName("StopButton")
         self.btn_abort.clicked.connect(self._abort_estimation)
         self.btn_abort.setEnabled(False)
+        self.btn_abort.setToolTip("No estimation process is currently running")
         left_layout.addWidget(self.btn_abort)
 
         self.btn_save = QPushButton("💾  Save Corrected Images")
         self.btn_save.setObjectName("LaunchButton")
         self.btn_save.clicked.connect(self._save_corrected)
         self.btn_save.setEnabled(False)
+        self.btn_save.setToolTip("Run drift estimation first")
         left_layout.addWidget(self.btn_save)
 
 
@@ -886,6 +890,7 @@ class DriftCorrectorWindow(QMainWindow):
         if self.shifts is None:
             self.shifts = [(0.0, 0.0)] * len(self.txt_data)
             self.btn_save.setEnabled(True)
+            self.btn_save.setToolTip("Click to save corrected images")
             
         dx = float(self.spin_man_x.value())
         dy = float(self.spin_man_y.value())
@@ -978,7 +983,9 @@ class DriftCorrectorWindow(QMainWindow):
         self.shifts = None
         self.lbl_ref_info.setText("Reference: (not set)")
         self.btn_estimate.setEnabled(False)
+        self.btn_estimate.setToolTip("Set a reference image and drag a ROI first")
         self.btn_save.setEnabled(False)
+        self.btn_save.setToolTip("Run drift estimation first")
         self.img_label.clear_roi()
         self._plot_drift_placeholder()
 
@@ -1040,6 +1047,7 @@ class DriftCorrectorWindow(QMainWindow):
 
         if self.image_files:
             self.btn_set_ref.setEnabled(True)
+            self.btn_set_ref.setToolTip("Click to set selected image as reference")
             self.slider_images.setMinimum(0)
             self.slider_images.setMaximum(len(self.image_files) - 1)
             self.slider_images.setValue(0)
@@ -1050,6 +1058,7 @@ class DriftCorrectorWindow(QMainWindow):
             self._log(f"Directory loaded: {self.img_dir}  ({len(self.image_files)} field-mapped images)")
         else:
             self.btn_set_ref.setEnabled(False)
+            self.btn_set_ref.setToolTip("No valid images found in directory")
             self.slider_images.setEnabled(False)
             self.btn_prev.setEnabled(False)
             self.btn_next.setEnabled(False)
@@ -1249,6 +1258,10 @@ class DriftCorrectorWindow(QMainWindow):
         """Enable estimation button when all prerequisites are satisfied."""
         ready = (self.ref_gray is not None and self.img_label.roi is not None)
         self.btn_estimate.setEnabled(ready)
+        if ready:
+            self.btn_estimate.setToolTip("Click to run drift estimation")
+        else:
+            self.btn_estimate.setToolTip("Set a reference image and drag a ROI first")
 
     # ────────────────────────── Drift Estimation ─────────────────────────────
 
@@ -1287,8 +1300,11 @@ class DriftCorrectorWindow(QMainWindow):
             return
 
         self.btn_estimate.setEnabled(False)
+        self.btn_estimate.setToolTip("Estimation in progress...")
         self.btn_save.setEnabled(False)
+        self.btn_save.setToolTip("Wait for estimation to complete")
         self.btn_abort.setEnabled(True)
+        self.btn_abort.setToolTip("Click to abort drift estimation")
         self.btn_dir.setEnabled(False)
         self.progress_bar.setValue(0)
         self._abort_flag = False
@@ -1348,6 +1364,7 @@ class DriftCorrectorWindow(QMainWindow):
                 self._recompute_crop_bounds()
 
                 self.btn_save.setEnabled(True)
+                self.btn_save.setToolTip("Click to save corrected images")
                 self.progress_bar.setValue(100)
                 self._log(f"Drift estimation complete. {len(shifts)} shifts computed.")
                 self._plot_drift_curves()
@@ -1365,12 +1382,15 @@ class DriftCorrectorWindow(QMainWindow):
         finally:
             QApplication.restoreOverrideCursor()
             self.btn_estimate.setEnabled(True)
+            self.btn_estimate.setToolTip("Click to run drift estimation")
             self.btn_abort.setEnabled(False)
+            self.btn_abort.setToolTip("No estimation process is currently running")
             self.btn_dir.setEnabled(True)
 
     def _abort_estimation(self):
         self._abort_flag = True
         self.btn_abort.setEnabled(False)
+        self.btn_abort.setToolTip("Aborting...")
         self._log("Abort requested …")
 
     # ────────────────────────── Saving ──────────────────────────────────────
