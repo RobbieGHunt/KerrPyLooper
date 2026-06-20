@@ -110,6 +110,7 @@ class HcMapGUI(QWidget):
         self.btn_calc = QPushButton("Calculate Maps")
         self.btn_calc.clicked.connect(self.calculate_map)
         self.btn_calc.setEnabled(False)
+        self.btn_calc.setToolTip("Select an image directory containing a mapping .txt file first")
         left_layout.addWidget(self.btn_calc)
 
         self.progress_bar = QProgressBar()
@@ -149,6 +150,7 @@ class HcMapGUI(QWidget):
         self.btn_save = QPushButton("Save Map Image")
         self.btn_save.clicked.connect(self.save_map)
         self.btn_save.setEnabled(False)
+        self.btn_save.setToolTip("Calculate maps first before saving")
         left_layout.addWidget(self.btn_save)
 
         left_layout.addStretch()
@@ -306,6 +308,7 @@ class HcMapGUI(QWidget):
         if not txt_file:
             self.lbl_dir_status.setText("Error: No mapping .txt file found.")
             self.btn_calc.setEnabled(False)
+            self.btn_calc.setToolTip("Select an image directory containing a mapping .txt file first")
             return
 
         try:
@@ -325,15 +328,18 @@ class HcMapGUI(QWidget):
 
             self.lbl_dir_status.setText(f"Loaded {len(self.loop_field)} images.")
             self.btn_calc.setEnabled(True)
+            self.btn_calc.setToolTip("Start local coercivity calculation")
         except Exception as e:
             self.lbl_dir_status.setText(f"Error loading data: {e}")
             self.btn_calc.setEnabled(False)
+            self.btn_calc.setToolTip("Select an image directory containing a mapping .txt file first")
 
     def calculate_map(self):
         if self.txt_data is None or self.background_array is None:
             return
 
         self.btn_calc.setEnabled(False)
+        self.btn_calc.setToolTip("Calculation in progress...")
         self.btn_dir.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0) # Indeterminate
@@ -366,6 +372,7 @@ class HcMapGUI(QWidget):
         self.hc_map, self.hr_map = result
         self.replot_map()
         self.btn_save.setEnabled(True)
+        self.btn_save.setToolTip("Save the current map visualization")
         self._reset_calc_ui()
 
     def on_calc_error(self, err_msg):
@@ -374,6 +381,7 @@ class HcMapGUI(QWidget):
 
     def _reset_calc_ui(self):
         self.btn_calc.setEnabled(True)
+        self.btn_calc.setToolTip("Start local coercivity calculation")
         self.btn_dir.setEnabled(True)
         self.progress_bar.setVisible(False)
 
