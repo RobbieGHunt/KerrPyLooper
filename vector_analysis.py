@@ -322,6 +322,7 @@ class VectorAnalysisGUI(QWidget):
         self.btn_load_data = QPushButton("Load Sweep Info")
         self.btn_load_data.clicked.connect(self.load_sweep_info)
         self.btn_load_data.setEnabled(False)
+        self.btn_load_data.setToolTip("Select a base directory containing 'x' and 'y' subdirectories first")
         dir_layout.addRow(self.btn_load_data)
         grp_dir.setLayout(dir_layout)
         left_layout.addWidget(grp_dir)
@@ -436,6 +437,7 @@ class VectorAnalysisGUI(QWidget):
         self.btn_run.setObjectName("LaunchButton")
         self.btn_run.setCursor(Qt.PointingHandCursor)
         self.btn_run.setEnabled(False)
+        self.btn_run.setToolTip("Load sweep info to enable analysis")
         self.btn_run.clicked.connect(self.run_vector_analysis)
         left_layout.addWidget(self.btn_run)
         
@@ -450,21 +452,25 @@ class VectorAnalysisGUI(QWidget):
         self.btn_save_plot = QPushButton("Save Current Plot")
         self.btn_save_plot.clicked.connect(self.save_current_plot)
         self.btn_save_plot.setEnabled(False)
+        self.btn_save_plot.setToolTip("Run vector analysis first")
         export_layout.addWidget(self.btn_save_plot)
         
         self.btn_save_batch = QPushButton("Batch Save All Fields")
         self.btn_save_batch.clicked.connect(self.save_batch_plots)
         self.btn_save_batch.setEnabled(False)
+        self.btn_save_batch.setToolTip("Run vector analysis first")
         export_layout.addWidget(self.btn_save_batch)
         
         self.btn_save_loop = QPushButton("Save Loop Data (.txt)")
         self.btn_save_loop.clicked.connect(self.save_loop_data)
         self.btn_save_loop.setEnabled(False)
+        self.btn_save_loop.setToolTip("Run vector analysis first")
         export_layout.addWidget(self.btn_save_loop)
         
         self.btn_save_movie = QPushButton("Make Movie (GIF/MP4)")
         self.btn_save_movie.clicked.connect(self.make_movie)
         self.btn_save_movie.setEnabled(False)
+        self.btn_save_movie.setToolTip("Run vector analysis first")
         export_layout.addWidget(self.btn_save_movie)
         
         grp_export.setLayout(export_layout)
@@ -781,7 +787,9 @@ class VectorAnalysisGUI(QWidget):
                 "The base directory must contain both 'x' and 'y' subdirectories."
             )
             self.btn_load_data.setEnabled(False)
+            self.btn_load_data.setToolTip("Select a base directory containing 'x' and 'y' subdirectories first")
             self.btn_run.setEnabled(False)
+            self.btn_run.setToolTip("Load sweep info to enable analysis")
             return
             
         # Scan mapping txt files
@@ -800,11 +808,14 @@ class VectorAnalysisGUI(QWidget):
                 "Could not find any .txt loop mapping files in the sweep folders."
             )
             self.btn_load_data.setEnabled(False)
+            self.btn_load_data.setToolTip("Select a base directory containing 'x' and 'y' subdirectories first")
             self.btn_run.setEnabled(False)
+            self.btn_run.setToolTip("Load sweep info to enable analysis")
             return
             
         self.cmb_mapping.addItems(txt_files)
         self.btn_load_data.setEnabled(True)
+        self.btn_load_data.setToolTip("Load mapping info to proceed")
 
     def load_sweep_info(self):
         map_filename = self.cmb_mapping.currentText()
@@ -926,6 +937,7 @@ class VectorAnalysisGUI(QWidget):
             self.plot_full_preview()
             
             self.btn_run.setEnabled(True)
+            self.btn_run.setToolTip("Run vector analysis on loaded sweep data")
             self.is_analyzed = False
             self.update_plots()
             
@@ -1284,13 +1296,18 @@ class VectorAnalysisGUI(QWidget):
         self.btn_run.setEnabled(True)
         self.btn_run.setText("Run Vector Analysis")
         self.btn_run.setStyleSheet("")  # clear highlight accent
+        self.btn_run.setToolTip("Run vector analysis on loaded sweep data")
         self.progress_bar.setVisible(False)
         
         # Enable exports
         self.btn_save_plot.setEnabled(True)
+        self.btn_save_plot.setToolTip("Export the currently displayed vector plot as an image")
         self.btn_save_batch.setEnabled(True)
+        self.btn_save_batch.setToolTip("Export vector plots for all field steps")
         self.btn_save_loop.setEnabled(True)
+        self.btn_save_loop.setToolTip("Export the vector hysteresis loop data as a text file")
         self.btn_save_movie.setEnabled(True)
+        self.btn_save_movie.setToolTip("Export an animated sequence of the vector maps")
         
         # Trigger redraw
         self.update_plots()

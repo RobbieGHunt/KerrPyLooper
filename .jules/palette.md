@@ -1,3 +1,3 @@
-## 2026-05-18 - Tooltips for dynamically disabled buttons
-**Learning:** Users often get confused and feel stuck when main action buttons are disabled without context.
-**Action:** Always add a tooltip explaining exactly what steps the user needs to take to enable a disabled button, rather than just leaving it grayed out.
+## 2026-02-28 - Clarifying Disabled Button States with Dynamic Tooltips
+**Learning:** When UI controls (like 'Run Vector Analysis' or 'Save Plot') are disabled, users often struggle to understand *why* they are disabled or what prerequisites are missing. This is a recurring friction point in complex, multi-step data processing tools where specific workflows must be followed.
+**Action:** Systematically add dynamic `setToolTip()` messages to buttons that explain their disabled state (e.g., 'Load sweep info first to enable analysis'). When the state becomes enabled, update the tooltip to describe the button's action.
