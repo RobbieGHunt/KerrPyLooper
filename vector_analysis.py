@@ -1454,17 +1454,23 @@ class VectorAnalysisGUI(QWidget):
                 yy = np.arange(0, Ny, skip)
                 XX, YY = np.meshgrid(xx, yy)
                 # quiver specifies x component then y component
-                ax_map.quiver(XX, YY, vx[::skip, ::skip], -vy[::skip, ::skip], pivot='mid', color='black', alpha=0.9)
+                ax_map.quiver(XX, YY, vx[::skip, ::skip], vy[::skip, ::skip], pivot='mid', color='black', alpha=0.9)
                 
             # Scale Bar
             if self.chk_sbar.isChecked():
                 lens = self.cmb_lens.currentText()
                 if lens in self.lens_info:
                     bar_length, bar_size = self.lens_info[lens]
-                    bar_x = 20
-                    bar_y = theta.shape[0] - 20
+                    text_str = f"{bar_size} µm"
+                    margin = 20
+                    # Ensure the leftmost element (scale bar line or centered label) maintains a consistent margin
+                    # For lenses where text is wider than the line (e.g. 10x), offset bar_x so text does not clip
+                    text_half_width = max(len(text_str) * 8.5, bar_length / 2.0)
+                    center_x = max(margin + bar_length / 2.0, margin + text_half_width)
+                    bar_x = center_x - bar_length / 2.0
+                    bar_y = theta.shape[0] - margin
                     ax_map.plot([bar_x, bar_x + bar_length], [bar_y, bar_y], color='white', linewidth=4)
-                    ax_map.text(bar_x + bar_length / 2.0, bar_y - 10, f"{bar_size} µm",
+                    ax_map.text(center_x, bar_y - 10, text_str,
                                 ha='center', va='bottom', color='white', fontsize=16, fontweight='bold')
                                 
             # Field Value Text Box Overlay
@@ -1507,7 +1513,7 @@ class VectorAnalysisGUI(QWidget):
                     xx = np.arange(0, Nx, skip)
                     yy = np.arange(0, Ny, skip)
                     XX, YY = np.meshgrid(xx, yy)
-                    self.ax_loop_vector.quiver(XX, YY, vx[::skip, ::skip], -vy[::skip, ::skip], pivot='mid', color='black', alpha=0.9)
+                    self.ax_loop_vector.quiver(XX, YY, vx[::skip, ::skip], vy[::skip, ::skip], pivot='mid', color='black', alpha=0.9)
                 
                 # Checkbox for Show Field Value on vector images
                 if self.chk_show_field.isChecked():
@@ -1651,7 +1657,7 @@ class VectorAnalysisGUI(QWidget):
             try:
                 # Temporarily switch back Tab 1 active state to force render, then save
                 self.tabs.setCurrentIndex(0)
-                self.fig_vector.savefig(filepath, transparent=True, dpi=150)
+                self.fig_vector.savefig(filepath, transparent=True, dpi=150, bbox_inches='tight', pad_inches=0.08)
                 QMessageBox.information(self, "Saved", f"Vector plot saved successfully to:\n{filepath}")
             except Exception as e:
                 QMessageBox.critical(self, "Save Error", f"Failed to save current vector plot:\n{e}")
@@ -1693,7 +1699,7 @@ class VectorAnalysisGUI(QWidget):
                 # Save plot file name
                 field = self.fields[i]
                 out_path = os.path.join(target_folder, f"vector_plot_{i:04d}_{field:.2f}mT.png")
-                self.fig_vector.savefig(out_path, transparent=True, dpi=120)
+                self.fig_vector.savefig(out_path, transparent=True, dpi=120, bbox_inches='tight', pad_inches=0.08)
                 
                 # Update progress
                 self.progress_bar.setValue(int((i + 1) / N * 100))
@@ -1808,49 +1814,86 @@ class VectorAnalysisGUI(QWidget):
                 self.update_plots()
                 QApplication.processEvents()
                 
-                # Render the current vector map plot to a PIL Image using savefig with RGBA format
-                # ⚡ Bolt Optimization: Writing raw RGBA bytes instead of PNG avoids compression/decompression
-                # overhead, making frame capture roughly 2-3x faster without mutating the live GUI canvas.
+                # Render the current vector map plot tightly to drawn figures
                 buf = io.BytesIO()
-                self.fig_vector.savefig(buf, format='rgba', dpi=dpi, transparent=True)
+                bg_color = self.fig_vector.get_facecolor()
+                self.fig_vector.savefig(
+                    buf, format='png', dpi=dpi, facecolor=bg_color, transparent=False,
+                    bbox_inches='tight', pad_inches=0.08
+                )
                 buf.seek(0)
-
-                w_in, h_in = self.fig_vector.get_size_inches()
-                w, h = int(w_in * dpi), int(h_in * dpi)
-                img = Image.frombuffer('RGBA', (w, h), buf.read(), 'raw', 'RGBA', 0, 1).copy()
-                frames.append(img)
+                with Image.open(buf) as img_in:
+                    frames.append(img_in.convert('RGB'))
                 buf.close()
                 
                 # Update progress (first 80% is frame rendering)
                 self.progress_bar.setValue(int((i + 1) / N * 80))
                 QApplication.processEvents()
                 
+            # Ensure all frames have uniform width and height (prevent 1-pixel rounding variation)
+            max_w = max(f.width for f in frames)
+            max_h = max(f.height for f in frames)
+            uniform_frames = []
+            bg_rgb = tuple(int(c * 255) for c in bg_color[:3]) if isinstance(bg_color, tuple) else bg_color
+            for f in frames:
+                if f.size == (max_w, max_h):
+                    uniform_frames.append(f)
+                else:
+                    padded = Image.new('RGB', (max_w, max_h), color=bg_rgb)
+                    padded.paste(f, ((max_w - f.width) // 2, (max_h - f.height) // 2))
+                    uniform_frames.append(padded)
+
             # Now compile the frames into the output movie file
             if fmt == "gif":
                 duration_ms = int(1000.0 / fps)
-                frames[0].save(
+                
+                # Build a single unified global palette across all frames + the HSV colormap spectrum
+                # This ensures the HSV color wheel and static elements remain 100% static across all frames
+                montage_w, montage_h = uniform_frames[0].size
+                step = max(1, len(uniform_frames) // 10)
+                sample_frames = uniform_frames[::step]
+                
+                hsv_cmap = mpl.colormaps['hsv']
+                hsv_bright = hsv_cmap(np.linspace(0, 1, 256)) * 0.8
+                hsv_strip = Image.fromarray((hsv_bright[None, :, :3] * 255).astype(np.uint8))
+                hsv_strip = hsv_strip.resize((montage_w, 20), Image.NEAREST)
+                
+                slice_h = max(20, montage_h // 4)
+                montage = Image.new('RGB', (montage_w, len(sample_frames) * slice_h + 20))
+                for idx_s, sf in enumerate(sample_frames):
+                    sf_small = sf.resize((montage_w, slice_h), Image.BILINEAR)
+                    montage.paste(sf_small, (0, idx_s * slice_h))
+                montage.paste(hsv_strip, (0, len(sample_frames) * slice_h))
+                
+                global_palette_img = montage.quantize(colors=256, method=Image.Quantize.MEDIANCUT)
+                
+                quantized_frames = [
+                    f.quantize(palette=global_palette_img, dither=Image.Dither.NONE) for f in uniform_frames
+                ]
+                quantized_frames[0].save(
                     filepath,
                     save_all=True,
-                    append_images=frames[1:],
+                    append_images=quantized_frames[1:],
                     duration=duration_ms,
-                    loop=0
+                    loop=0,
+                    disposal=2
                 )
             else:
                 import matplotlib.animation as animation
                 
                 # Create a simple figure matching image size in inches
-                img_w, img_h = frames[0].size
+                img_w, img_h = uniform_frames[0].size
                 fig_anim = Figure(figsize=(img_w/dpi, img_h/dpi), dpi=dpi)
                 ax_anim = fig_anim.add_subplot(1, 1, 1)
-                fig_anim.patch.set_facecolor('none')
+                fig_anim.patch.set_facecolor(bg_color)
                 ax_anim.axis('off')
                 fig_anim.subplots_adjust(left=0, right=1, bottom=0, top=1)
                 
-                im_plot = ax_anim.imshow(np.array(frames[0]))
+                im_plot = ax_anim.imshow(np.array(uniform_frames[0]))
                 
                 writer = animation.FFMpegWriter(fps=fps)
                 with writer.saving(fig_anim, filepath, dpi=dpi):
-                    for idx, img in enumerate(frames):
+                    for idx, img in enumerate(uniform_frames):
                         im_plot.set_data(np.array(img))
                         writer.grab_frame()
                         
