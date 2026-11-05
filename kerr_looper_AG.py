@@ -1233,7 +1233,7 @@ class LoopCorrectionPanel(QWidget):
         self.replot_current_data()
 
     def on_canvas_resize(self, event):
-        if getattr(self, '_in_resize', False) or getattr(self, '_in_plot', False):
+        if getattr(self, '_in_resize', False):
             return
         if self.canvas is None:
             return
@@ -1241,7 +1241,7 @@ class LoopCorrectionPanel(QWidget):
         try:
             self.canvas.original_resizeEvent(event)
             if self.parent_widget and self.parent_widget.loop_field is not None:
-                # Save limits to be restored inside plot_loop
+                if getattr(self, '_in_plot', False): return
                 self._resize_limits = (self.ax.get_xlim(), self.ax.get_ylim())
                 self.replot_current_data()
             else:
@@ -1268,7 +1268,7 @@ class LoopCorrectionPanel(QWidget):
             fig_bg = colors["card"]
             ax_bg = colors["bg"]
             
-            self.figure = Figure(figsize=(4, 6), facecolor=fig_bg)
+            self.figure = Figure(figsize=(5, 3.5), facecolor=fig_bg)
             self.ax = self.figure.add_subplot(111)
             self.ax.set_facecolor(ax_bg)
             self.canvas = FigureCanvas(self.figure)
@@ -1297,8 +1297,7 @@ class LoopCorrectionPanel(QWidget):
         else:
             w = max(50, self.canvas.width())
             h = max(50, self.canvas.height())
-            diag = np.sqrt(w**2 + h**2)
-            scale = max(0.5, min(4.0, diag / 640.3))
+            scale = max(0.65, min(1.15, min(w / 550.0, h / 360.0)))
         
         # Read style choices from controls
         grid_style_map = {"Solid": "-", "Dashed": "--", "Dotted": ":", "Dash-dot": "-."}
@@ -1353,7 +1352,7 @@ class LoopCorrectionPanel(QWidget):
             marker_style = "o"
             
         self.ax.plot(field, intensity, color=line_color, linestyle=line_style, 
-                     marker=marker_style, lw=1.5 * scale, markersize=4 * scale, label='MOKE intensity')
+                     marker=marker_style, lw=1.3 * scale, markersize=3.2 * scale, label='MOKE intensity')
         
         # Determine theme dynamically
         theme = "dark"
@@ -1375,14 +1374,14 @@ class LoopCorrectionPanel(QWidget):
         if self.ax.title:
             self.ax.title.set_color(text_color)
         
-        self.ax.set_xlabel(xlabel_text, fontsize=18 * scale, fontweight='normal', color=text_color)
-        self.ax.set_ylabel(ylabel_text, fontsize=18 * scale, fontweight='normal', color=text_color)
+        self.ax.set_xlabel(xlabel_text, fontsize=10 * scale, fontweight='normal', color=text_color)
+        self.ax.set_ylabel(ylabel_text, fontsize=10 * scale, fontweight='normal', color=text_color)
         if display_title:
-            self.ax.set_title(display_title, fontsize=11 * scale, fontweight='normal', pad=10 * scale, color=text_color)
+            self.ax.set_title(display_title, fontsize=10.5 * scale, fontweight='normal', pad=6 * scale, color=text_color)
         
         # Configure Grid
         if show_grid:
-            self.ax.grid(True, which='both', color=grid_color, linestyle=grid_style, linewidth=1 * scale)
+            self.ax.grid(True, which='both', color=grid_color, linestyle=grid_style, linewidth=0.8 * scale)
         else:
             self.ax.grid(False)
             
@@ -1390,20 +1389,20 @@ class LoopCorrectionPanel(QWidget):
         if pub_ticks:
             self.ax.tick_params(axis='both', which='major', direction='in', 
                                 top=True, right=True, bottom=True, left=True,
-                                labelsize=9.5 * scale, width=1.0 * scale, length=5.0 * scale, colors=text_color)
+                                labelsize=8.5 * scale, width=0.9 * scale, length=4.0 * scale, colors=text_color)
             self.ax.tick_params(axis='both', which='minor', direction='in',
                                 top=True, right=True, bottom=True, left=True,
-                                width=0.75 * scale, length=2.5 * scale, colors=text_color)
+                                width=0.7 * scale, length=2.0 * scale, colors=text_color)
             self.ax.minorticks_on()
         else:
             self.ax.tick_params(axis='both', which='both', direction='out',
                                 top=False, right=False, bottom=True, left=True,
-                                labelsize=9.5 * scale, width=1.0 * scale, length=5.0 * scale, colors=text_color)
+                                labelsize=8.5 * scale, width=0.9 * scale, length=4.0 * scale, colors=text_color)
             self.ax.minorticks_off()
             
         # Style Spines (Borders)
         for spine in self.ax.spines.values():
-            spine.set_linewidth(1.0 * scale)
+            spine.set_linewidth(0.9 * scale)
             spine.set_color(spine_color)
             
             
@@ -1421,40 +1420,40 @@ class LoopCorrectionPanel(QWidget):
                 yrange = 1.0
                 
             if hc_pos is not None:
-                self.ax.plot(hc_pos[0], hc_pos[1], 'o', ms=6 * scale, mec=hc_pos_color, mfc='white', mew=1.5 * scale, label='Hc+')
-                self.ax.axvline(x=hc_pos[0], color=hc_pos_color, linestyle=':', alpha=0.7, lw=1.2 * scale)
+                self.ax.plot(hc_pos[0], hc_pos[1], 'o', ms=5 * scale, mec=hc_pos_color, mfc='white', mew=1.2 * scale, label='Hc+')
+                self.ax.axvline(x=hc_pos[0], color=hc_pos_color, linestyle=':', alpha=0.7, lw=1.0 * scale)
                 self.ax.annotate(f"Hc+\n{hc_pos[0]:.2f} mT", xy=hc_pos, 
                                  xytext=(hc_pos[0], hc_pos[1] + 0.15 * yrange),
-                                 ha="center", va="bottom", fontsize=8.5 * scale, color=hc_pos_color,
-                                 bbox=dict(boxstyle='round,pad=0.2', fc='#f1f8e9', ec=hc_pos_color, lw=0.5 * scale, alpha=0.9),
+                                 ha="center", va="bottom", fontsize=7.5 * scale, color=hc_pos_color,
+                                 bbox=dict(boxstyle='round,pad=0.18', fc='#f1f8e9', ec=hc_pos_color, lw=0.5 * scale, alpha=0.9),
                                  arrowprops=dict(arrowstyle='->', color=hc_pos_color, lw=0.8 * scale))
                                  
             if hc_neg is not None:
-                self.ax.plot(hc_neg[0], hc_neg[1], 'o', ms=6 * scale, mec=hc_neg_color, mfc='white', mew=1.5 * scale, label='Hc-')
-                self.ax.axvline(x=hc_neg[0], color=hc_neg_color, linestyle=':', alpha=0.7, lw=1.2 * scale)
+                self.ax.plot(hc_neg[0], hc_neg[1], 'o', ms=5 * scale, mec=hc_neg_color, mfc='white', mew=1.2 * scale, label='Hc-')
+                self.ax.axvline(x=hc_neg[0], color=hc_neg_color, linestyle=':', alpha=0.7, lw=1.0 * scale)
                 self.ax.annotate(f"Hc-\n{hc_neg[0]:.2f} mT", xy=hc_neg,
                                  xytext=(hc_neg[0], hc_neg[1] - 0.15 * yrange),
-                                 ha="center", va="top", fontsize=8.5 * scale, color=hc_neg_color,
-                                 bbox=dict(boxstyle='round,pad=0.2', fc='#ffebee', ec=hc_neg_color, lw=0.5 * scale, alpha=0.9),
+                                 ha="center", va="top", fontsize=7.5 * scale, color=hc_neg_color,
+                                 bbox=dict(boxstyle='round,pad=0.18', fc='#ffebee', ec=hc_neg_color, lw=0.5 * scale, alpha=0.9),
                                  arrowprops=dict(arrowstyle='->', color=hc_neg_color, lw=0.8 * scale))
                                  
             if rem_fields is not None and rem_values is not None and len(rem_fields) > 0:
                 mean_rf = np.mean(rem_fields)
                 mean_rv = np.mean(rem_values)
-                self.ax.plot(mean_rf, mean_rv, 's', ms=6 * scale, mec=rem_color, mfc='white', mew=1.5 * scale, label='Hr')
-                self.ax.axhline(y=mean_rv, color=rem_color, linestyle=':', alpha=0.6, lw=1.0 * scale)
+                self.ax.plot(mean_rf, mean_rv, 's', ms=5 * scale, mec=rem_color, mfc='white', mew=1.2 * scale, label='Hr')
+                self.ax.axhline(y=mean_rv, color=rem_color, linestyle=':', alpha=0.6, lw=0.9 * scale)
                 
                 # Make sure annotation arrow starts properly
                 x_offset = 0.15 * (max(field) - min(field)) if len(field) > 0 else 10.0
                 self.ax.annotate(f"Hr\n{mean_rv:.3f}", 
                                  xy=(mean_rf, mean_rv), 
                                  xytext=(mean_rf + x_offset, mean_rv), 
-                                 ha="left", va="center", fontsize=8.5 * scale, color=rem_color,
-                                 bbox=dict(boxstyle='round,pad=0.2', fc='#fff3e0', ec=rem_color, lw=0.5 * scale, alpha=0.9),
+                                 ha="left", va="center", fontsize=7.5 * scale, color=rem_color,
+                                 bbox=dict(boxstyle='round,pad=0.18', fc='#fff3e0', ec=rem_color, lw=0.5 * scale, alpha=0.9),
                                  arrowprops=dict(arrowstyle='->', color=rem_color, lw=0.8 * scale))
 
         if show_legend:
-            self.ax.legend(loc='best', fontsize=8.5 * scale, frameon=True, facecolor='#ffffff', edgecolor='#e0e0e0', framealpha=0.9)
+            self.ax.legend(loc='best', fontsize=8.0 * scale, frameon=True, facecolor='#ffffff', edgecolor='#e0e0e0', framealpha=0.9)
             
         # Restore limits if we are resizing
         if hasattr(self, '_resize_limits') and self._resize_limits is not None:
