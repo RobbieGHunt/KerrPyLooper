@@ -1967,7 +1967,8 @@ class MOKEImageSubtractor(QWidget):
 
     def load_lens_info(self):
         import json
-        lens_path = "lens.json"
+        from shared_utils.app_paths import get_lens_config_path
+        lens_path = get_lens_config_path()
         if not os.path.exists(lens_path):
             default_lenses = {
                 "10": [50, 100],
@@ -2958,7 +2959,7 @@ class MOKEImageSubtractor(QWidget):
         finally:
             QApplication.restoreOverrideCursor()
 
-if __name__ == "__main__":
+def main():
     import argparse
     parser = argparse.ArgumentParser(description="Kerr MOKE Looper Analysis Tool")
     parser.add_argument("--theme", type=str, default="dark", choices=["dark", "charcoal", "light"], help="Theme to apply")
@@ -2968,3 +2969,7 @@ if __name__ == "__main__":
     window = MOKEImageSubtractor(theme=args.theme)
     window.show()
     sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()

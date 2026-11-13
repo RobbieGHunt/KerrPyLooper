@@ -488,7 +488,7 @@ class DmdhGUI(QWidget):
         self.canvas_iso.draw()
 
 
-if __name__ == "__main__":
+def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--theme", type=str, default="dark")
@@ -499,3 +499,7 @@ if __name__ == "__main__":
     window.resize(1000, 700)
     window.show()
     sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()

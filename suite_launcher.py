@@ -47,6 +47,7 @@ from PyQt5.QtGui import QFont, QColor, QTextCursor, QPainter, QPainterPath, QPen
 from PyQt5.QtCore import Qt, QProcess, QProcessEnvironment, QRectF, QPointF
 
 from gui_styles import apply_theme, get_magnetic_icon
+from shared_utils.app_paths import is_frozen
 
 # ==============================================================================
 # TOOL REGISTRY (Easily add new scripts here)
@@ -968,6 +969,9 @@ class SuiteLauncherWindow(QMainWindow):
             self.log("\n[Info] Sending termination signal to process...")
             self.current_process.kill()
             
+    def launch_tool(self, tool_config):
+        return self.on_launch_tool(tool_config)
+
     def on_launch_tool(self, tool_config):
         """Callback when a card launch button is pressed."""
         if tool_config["id"] == "kerr_looper":
@@ -1167,7 +1171,7 @@ class SuiteLauncherWindow(QMainWindow):
         script_name = tool_config["script"]
         script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), script_name)
         
-        if not os.path.exists(script_path):
+        if not is_frozen() and not os.path.exists(script_path):
             QMessageBox.critical(
                 self, "Error", 
                 f"Could not locate the tool script:\n{script_path}"
@@ -1218,7 +1222,10 @@ class SuiteLauncherWindow(QMainWindow):
         self.log("-" * 60 + "\n")
         
         # Launch using sys.executable to ensure matching virtual environment/dependencies
-        cmd_args = [script_path] + args
+        if is_frozen():
+            cmd_args = ["--tool", tool_config["script"]] + args
+        else:
+            cmd_args = [script_path] + args
         self.current_process.start(sys.executable, cmd_args)
         
         # Update UI state
@@ -1313,9 +1320,48 @@ class SuiteLauncherWindow(QMainWindow):
 
 
 # ==============================================================================
-# ENTRY POINT
+# ENTRY POINT & CLI SUB-TOOL DISPATCHER
 # ==============================================================================
+def dispatch_tool(argv=None) -> bool:
+    """
+    If invoked as `<exe> --tool <script_name> [args...]`, strip `--tool <script_name>`
+    from `sys.argv`, explicitly import the target module, and invoke its `main()`.
+    Returns True if a tool was dispatched, False otherwise.
+    """
+    if argv is None:
+        argv = sys.argv
+    if "--tool" not in argv:
+        return False
+
+    idx = argv.index("--tool")
+    if idx + 1 >= len(argv):
+        raise ValueError("Missing script name after --tool")
+
+    script_name = os.path.basename(argv[idx + 1]).strip()
+    sys.argv = [argv[0]] + list(argv[1:idx]) + list(argv[idx + 2:])
+
+    if script_name in ("kerr_looper_AG.py", "kerr_looper_AG"):
+        import kerr_looper_AG as mod
+    elif script_name in ("batch_processor.py", "batch_processor"):
+        import batch_processor as mod
+    elif script_name in ("vector_analysis.py", "vector_analysis"):
+        import vector_analysis as mod
+    elif script_name in ("drift_corrector.py", "drift_corrector"):
+        import drift_corrector as mod
+    elif script_name in ("hc_map_tool.py", "hc_map_tool"):
+        import hc_map_tool as mod
+    elif script_name in ("dmdh_tool.py", "dmdh_tool"):
+        import dmdh_tool as mod
+    else:
+        raise ValueError(f"Unknown tool script: {script_name}")
+
+    mod.main()
+    return True
+
+
 def main():
+    if dispatch_tool(sys.argv):
+        return
     import os
     if os.environ.get("DIAGNOSTIC_LAUNCH") == "1":
         import traceback
@@ -1362,4 +1408,6 @@ def main():
 
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     main()

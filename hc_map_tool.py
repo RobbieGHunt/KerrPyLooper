@@ -459,7 +459,7 @@ class HcMapGUI(QWidget):
             self.figure.savefig(save_path, dpi=300)
             QMessageBox.information(self, "Saved", f"{name_prefix} map saved to:\n{save_path}")
 
-if __name__ == "__main__":
+def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--theme", type=str, default="dark")
@@ -469,3 +469,7 @@ if __name__ == "__main__":
     window = HcMapGUI(theme=args.theme)
     window.show()
     sys.exit(app.exec_())
+
+
+if __name__ == "__main__":
+    main()

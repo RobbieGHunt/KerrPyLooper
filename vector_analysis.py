@@ -247,7 +247,8 @@ class VectorAnalysisGUI(QWidget):
             self.on_base_dir_changed()
 
     def load_lens_info(self):
-        lens_path = "lens.json"
+        from shared_utils.app_paths import get_lens_config_path
+        lens_path = get_lens_config_path()
         if not os.path.exists(lens_path):
             # Create a default lens file with standard presets
             default_lenses = {
